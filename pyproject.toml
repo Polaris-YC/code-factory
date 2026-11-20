@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "code-factory"
+version = "0.1.0"
+description = "Autonomous multi-CLI software factory with deterministic anti-slop gates and portable agent skills."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.6", "mypy>=1.11"]
+
+[project.scripts]
+cf = "code_factory.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

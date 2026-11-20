@@ -1,0 +1,87 @@
+[factory]
+mode = "software"
+max_workers = 3
+max_gate_retries = 3
+max_review_rounds = 2
+task_timeout_seconds = 600
+worktree_root = ".code-factory/worktrees"
+
+[routing]
+planner = ["codex", "claude", "agy"]
+worker = ["codex", "claude", "agy"]
+reviewer = ["claude", "agy", "codex"]
+
+[adapters.codex]
+type = "codex"
+command = "codex"
+sandbox = "workspace-write"
+approve_for_me = true
+
+[adapters.claude]
+type = "claude"
+command = "claude"
+allowed_tools = ["Read", "Edit", "Write", "Bash", "Glob", "Grep"]
+
+[adapters.agy]
+type = "agy"
+command = "agy"
+mode = "accept-edits"
+sandbox = true
+
+[gates]
+commands = [
+  { name = "unit-tests", cmd = "PYTHONPATH=src python3 -m unittest discover -s tests -v", timeout = 180 },
+]
+
+[gates.slop]
+enabled = true
+max_diff_lines = 1200
+max_comment_ratio = 0.35
+enforce_owned_paths = true
+forbid_patterns = [
+  "TODO\\(agent\\)",
+  "FIXME\\(agent\\)",
+  "NotImplementedError\\(\"todo",
+]
+
+[gates.arch]
+enabled = true
+src_root = "src"
+
+[[gates.arch.rules]]
+from = "code_factory.core.models"
+forbid = [
+  "code_factory.adapters",
+  "code_factory.gates",
+  "code_factory.core.orchestrator",
+  "code_factory.core.worktree",
+  "code_factory.core.state",
+  "code_factory.config",
+  "code_factory.cli",
+]
+
+[[gates.arch.rules]]
+from = "code_factory.adapters"
+forbid = [
+  "code_factory.gates",
+  "code_factory.core.orchestrator",
+  "code_factory.core.worktree",
+  "code_factory.cli",
+]
+
+[[gates.arch.rules]]
+from = "code_factory.gates"
+forbid = [
+  "code_factory.adapters",
+  "code_factory.core.orchestrator",
+  "code_factory.cli",
+]
+
+[[gates.arch.rules]]
+from = "code_factory.core.worktree"
+forbid = [
+  "code_factory.adapters",
+  "code_factory.gates",
+  "code_factory.core.orchestrator",
+  "code_factory.cli",
+]
