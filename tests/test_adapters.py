@@ -158,6 +158,24 @@ class TestAdapters(unittest.TestCase):
         fallback = single_reg.pick_adapter("reviewer", exclude=("alpha",))
         self.assertEqual(fallback.name, "alpha")
 
+        # Explicit routing["reviewer"] = ["alpha"] must NEVER silently route to unrequested "beta"
+        strict_reg = AdapterRegistry(
+            adapters={"alpha": a1, "beta": a2},
+            routing={"worker": ["alpha"], "reviewer": ["alpha"]},
+        )
+        strict_rev = strict_reg.pick_adapter("reviewer", exclude=("alpha",))
+        self.assertEqual(strict_rev.name, "alpha")
+
+        # Disabled adapter is excluded by from_config
+        cfg_reg = AdapterRegistry.from_config(
+            adapter_configs={
+                "codex": {"type": "mock", "enabled": True},
+                "agy": {"type": "mock", "enabled": False},
+            },
+            routing={"reviewer": ["agy", "codex"]},
+        )
+        self.assertEqual([c.name for c in cfg_reg.probe_all()], ["codex"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -193,6 +193,73 @@ class TestOrchestratorE2E(unittest.TestCase):
             self.assertIn("gate", sources)
             self.assertIn("review", sources)
 
+    def test_reviewer_timeout_does_not_rerun_worker_and_resume_reuses_passed_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            _init_python_repo(repo)
+
+            worker_calls: dict[str, int] = {}
+
+            def worker_handler(inv: AgentInvocation, _call: int) -> tuple[int, str, dict[str, Any] | None]:
+                cwd = Path(inv.cwd)
+                if "Task: t1" in inv.prompt:
+                    worker_calls["t1"] = worker_calls.get("t1", 0) + 1
+                    (cwd / "app" / "one.py").write_text("X = 1\n", encoding="utf-8")
+                elif "Task: t2" in inv.prompt:
+                    worker_calls["t2"] = worker_calls.get("t2", 0) + 1
+                    (cwd / "app" / "two.py").write_text("Y = 2\n", encoding="utf-8")
+                return 0, "ok", None
+
+            fail_t2_reviewer = True
+
+            def flaky_reviewer(inv: AgentInvocation, _call: int) -> tuple[int, str, dict[str, Any] | None]:
+                if "t2" in inv.prompt and fail_t2_reviewer:
+                    return 124, "", None
+                verdict = {"decision": "APPROVE", "summary": "ok", "issues": []}
+                return 0, json.dumps(verdict), verdict
+
+            worker_mock = MockAdapter("codex", handler=worker_handler)
+            reviewer_mock = MockAdapter("agy", handler=flaky_reviewer)
+            reg = AdapterRegistry(
+                adapters={"codex": worker_mock, "agy": reviewer_mock},
+                routing={"worker": ["codex"], "reviewer": ["agy"]},
+            )
+            cfg = FactoryConfig(
+                max_workers=2,
+                max_gate_retries=2,
+                max_review_rounds=2,
+                gate_commands=[],
+                slop=SlopGateConfig(enabled=True),
+                arch=ArchGateConfig(enabled=False),
+            )
+            dag = TaskDAG(
+                run_id="resume-001",
+                goal="Test reviewer infra failure and resume",
+                base_branch="main",
+                tasks=[
+                    TaskSpec(id="t1", title="One", description="Write app/one.py", owned_paths=["app/one.py"]),
+                    TaskSpec(id="t2", title="Two", description="Write app/two.py", owned_paths=["app/two.py"]),
+                ],
+            )
+            orch = FactoryOrchestrator(repo_root=repo, config=cfg, registry=reg)
+            state1 = orch.run_dag(dag)
+
+            self.assertFalse(state1.integrated)
+            self.assertEqual(state1.tasks["t1"].status, TaskStatus.PASSED)
+            self.assertEqual(state1.tasks["t2"].status, TaskStatus.ESCALATED)
+            # Critical invariant: reviewer timeout must NOT send passing worker back to re-run
+            self.assertEqual(worker_calls["t2"], 1)
+            self.assertIsNotNone(state1.tasks["t2"].commit_sha)
+
+            # Fix reviewer and resume: t1 must be reused without re-running worker!
+            fail_t2_reviewer = False
+            state2 = orch.resume_run("resume-001")
+            self.assertTrue(state2.integrated)
+            self.assertEqual(state2.tasks["t1"].status, TaskStatus.PASSED)
+            self.assertEqual(state2.tasks["t2"].status, TaskStatus.PASSED)
+            self.assertEqual(worker_calls["t1"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -96,5 +96,18 @@ class TestGates(unittest.TestCase):
             self.assertIn("Gate FAILED: done-check-1", report.format_diagnostics())
 
 
+    def test_slop_gate_deletion_bias_does_not_penalize_large_deletions(self) -> None:
+        cfg = SlopGateConfig(enabled=True, max_diff_lines=50)
+        removed_block = "\n".join(f"-old line {i}" for i in range(1800))
+        diff = f"+++ b/src/a.py\n+x = 1\n{removed_block}\n"
+        res = run_slop_gate(
+            changed_files=["src/a.py"],
+            diff_text=diff,
+            config=cfg,
+            owned_paths=["src/*.py"],
+        )
+        self.assertTrue(res.passed)
+
+
 if __name__ == "__main__":
     unittest.main()

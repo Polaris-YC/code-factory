@@ -134,9 +134,31 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
     registry = AdapterRegistry.from_config(config.adapters, config.routing)
     orch = FactoryOrchestrator(repo_root=repo, config=config, registry=registry)
-    state = orch.run_dag(dag, create_pr=args.pr, keep_worktrees=args.keep_worktrees)
+    state = orch.run_dag(
+        dag,
+        create_pr=args.pr,
+        keep_worktrees=args.keep_worktrees,
+        cross_model_review=False if args.no_cross_model else None,
+    )
 
     print(f"Run `{state.run_id}` finished: integrated={state.integrated}, merged={state.merged_to_base}")
+    for tid, ts in state.tasks.items():
+        print(f"  - {tid}: {ts.status.value} (worker={ts.worker_adapter}, reviewer={ts.reviewer_adapter})")
+    return 0 if state.integrated else 2
+
+
+def _cmd_resume(args: argparse.Namespace) -> int:
+    repo = Path(args.repo).resolve()
+    config = load_config(repo)
+    registry = AdapterRegistry.from_config(config.adapters, config.routing)
+    orch = FactoryOrchestrator(repo_root=repo, config=config, registry=registry)
+    state = orch.resume_run(
+        args.run_id,
+        create_pr=args.pr,
+        keep_worktrees=args.keep_worktrees,
+        cross_model_review=False if args.no_cross_model else None,
+    )
+    print(f"Resumed `{state.run_id}`: integrated={state.integrated}, merged={state.merged_to_base}")
     for tid, ts in state.tasks.items():
         print(f"  - {tid}: {ts.status.value} (worker={ts.worker_adapter}, reviewer={ts.reviewer_adapter})")
     return 0 if state.integrated else 2
@@ -247,7 +269,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--dark", action="store_true", help="Auto-merge to base branch if all gates pass.")
     p_run.add_argument("--pr", action="store_true", help="Create a GitHub PR via `gh` when integrated.")
     p_run.add_argument("--keep-worktrees", action="store_true", help="Keep worktrees after run.")
+    p_run.add_argument(
+        "--no-cross-model",
+        action="store_true",
+        help="Disable cross-model reviewer exclusion (allow reviewer == worker).",
+    )
     p_run.set_defaults(func=_cmd_run)
+
+    p_resume = sub.add_parser(
+        "resume",
+        help="Resume an interrupted/escalated run, reusing already-PASSED task branches.",
+    )
+    p_resume.add_argument("run_id", help="Run ID to resume.")
+    p_resume.add_argument("--repo", default=".", help="Target repository path.")
+    p_resume.add_argument("--pr", action="store_true", help="Create a GitHub PR via `gh` when integrated.")
+    p_resume.add_argument("--keep-worktrees", action="store_true", help="Keep worktrees after run.")
+    p_resume.add_argument(
+        "--no-cross-model",
+        action="store_true",
+        help="Disable cross-model reviewer exclusion (allow reviewer == worker).",
+    )
+    p_resume.set_defaults(func=_cmd_resume)
 
     p_status = sub.add_parser("status", help="Inspect factory runs and state.")
     p_status.add_argument("run_id", nargs="?", default=None, help="Optional run_id.")

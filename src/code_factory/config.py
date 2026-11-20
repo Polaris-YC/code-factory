@@ -21,6 +21,7 @@ class GateCommandConfig:
 class SlopGateConfig:
     enabled: bool = True
     max_diff_lines: int = 800
+    count_deletions_in_diff_budget: bool = False
     max_comment_ratio: float = 0.35
     enforce_owned_paths: bool = True
     forbid_patterns: list[str] = field(
@@ -51,7 +52,9 @@ class FactoryConfig:
     max_workers: int = 3
     max_gate_retries: int = 3
     max_review_rounds: int = 2
+    cross_model_review: bool = True
     task_timeout_seconds: int = 600
+    reviewer_timeout_seconds: int = 180
     worktree_root: str = ".code-factory/worktrees"
     routing: dict[str, list[str]] = field(
         default_factory=lambda: {
@@ -120,7 +123,9 @@ def load_config(
             "max_workers": defaults.max_workers,
             "max_gate_retries": defaults.max_gate_retries,
             "max_review_rounds": defaults.max_review_rounds,
+            "cross_model_review": defaults.cross_model_review,
             "task_timeout_seconds": defaults.task_timeout_seconds,
+            "reviewer_timeout_seconds": defaults.reviewer_timeout_seconds,
             "worktree_root": defaults.worktree_root,
         },
         "routing": dict(defaults.routing),
@@ -130,6 +135,7 @@ def load_config(
             "slop": {
                 "enabled": defaults.slop.enabled,
                 "max_diff_lines": defaults.slop.max_diff_lines,
+                "count_deletions_in_diff_budget": defaults.slop.count_deletions_in_diff_budget,
                 "max_comment_ratio": defaults.slop.max_comment_ratio,
                 "enforce_owned_paths": defaults.slop.enforce_owned_paths,
                 "forbid_patterns": list(defaults.slop.forbid_patterns),
@@ -178,7 +184,9 @@ def load_config(
         max_workers=max(1, int(f_sec.get("max_workers", 3))),
         max_gate_retries=max(0, int(f_sec.get("max_gate_retries", 3))),
         max_review_rounds=max(0, int(f_sec.get("max_review_rounds", 2))),
+        cross_model_review=bool(f_sec.get("cross_model_review", True)),
         task_timeout_seconds=max(10, int(f_sec.get("task_timeout_seconds", 600))),
+        reviewer_timeout_seconds=max(10, int(f_sec.get("reviewer_timeout_seconds", 180))),
         worktree_root=str(f_sec.get("worktree_root", ".code-factory/worktrees")),
         routing={
             str(role): [str(name) for name in names]
@@ -193,6 +201,9 @@ def load_config(
         slop=SlopGateConfig(
             enabled=bool(s_sec.get("enabled", True)),
             max_diff_lines=int(s_sec.get("max_diff_lines", 800)),
+            count_deletions_in_diff_budget=bool(
+                s_sec.get("count_deletions_in_diff_budget", False)
+            ),
             max_comment_ratio=float(s_sec.get("max_comment_ratio", 0.35)),
             enforce_owned_paths=bool(s_sec.get("enforce_owned_paths", True)),
             forbid_patterns=[str(p) for p in s_sec.get("forbid_patterns", [])],

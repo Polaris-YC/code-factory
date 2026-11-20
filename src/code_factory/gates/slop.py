@@ -79,15 +79,20 @@ def run_slop_gate(
         elif line.startswith("-"):
             removed_count += 1
 
-    total_churn = len(added_lines) + removed_count
+    measured_lines = (
+        len(added_lines) + removed_count
+        if config.count_deletions_in_diff_budget
+        else len(added_lines)
+    )
     budget = (
         max_diff_lines_override
         if max_diff_lines_override is not None
         else config.max_diff_lines
     )
-    if budget > 0 and total_churn > budget:
+    if budget > 0 and measured_lines > budget:
+        label = "Diff churn" if config.count_deletions_in_diff_budget else "Added lines"
         violations.append(
-            f"Diff churn ({total_churn} lines) exceeds budget ({budget} lines)."
+            f"{label} ({measured_lines} lines) exceeds budget ({budget} lines)."
         )
 
     non_empty_added = [

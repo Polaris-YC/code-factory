@@ -80,5 +80,25 @@ class TestConfigAndPlanner(unittest.TestCase):
             validate_and_plan(dag)
 
 
+    def test_rejects_invalid_done_check_shell_syntax(self) -> None:
+        dag = TaskDAG(
+            run_id="r4",
+            goal="Broken quote in done_check",
+            base_branch="main",
+            tasks=[
+                TaskSpec(
+                    id="a",
+                    title="A",
+                    description="",
+                    owned_paths=["a.py"],
+                    done_checks=['python3 -c "print(\'unterminated)'],
+                ),
+            ],
+        )
+        with self.assertRaises(DAGValidationError) as ctx:
+            validate_and_plan(dag)
+        self.assertIn("invalid shell syntax", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

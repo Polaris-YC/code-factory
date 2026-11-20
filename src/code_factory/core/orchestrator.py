@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
-from code_factory.adapters.registry import AdapterRegistry
+from code_factory.adapters.registry import AdapterRegistry, AdapterResolutionError
 from code_factory.config import FactoryConfig
 from code_factory.core.models import (
     AgentInvocation,
@@ -279,20 +279,35 @@ class FactoryOrchestrator:
         *,
         create_pr: bool = False,
         keep_worktrees: bool = False,
+        cross_model_review: bool | None = None,
+        resume_state: RunState | None = None,
     ) -> RunState:
-        """Execute a validated TaskDAG end-to-end with bounded self-healing and integration."""
+        """Execute (or resume) a validated TaskDAG end-to-end with bounded self-healing."""
         plan = validate_and_plan(dag)
         store = RunStore(self.repo_root, dag.run_id)
         store.save_dag(dag)
 
-        state = RunState(
-            run_id=dag.run_id,
-            goal=dag.goal,
-            repo_root=str(self.repo_root),
-            base_branch=dag.base_branch,
-            mode=dag.mode,
-            tasks={t.id: TaskExecutionState(task_id=t.id) for t in dag.tasks},
+        use_cross_model = (
+            self.config.cross_model_review
+            if cross_model_review is None
+            else cross_model_review
         )
+
+        if resume_state is not None:
+            state = resume_state
+            for t in dag.tasks:
+                if t.id not in state.tasks:
+                    state.tasks[t.id] = TaskExecutionState(task_id=t.id)
+        else:
+            state = RunState(
+                run_id=dag.run_id,
+                goal=dag.goal,
+                repo_root=str(self.repo_root),
+                base_branch=dag.base_branch,
+                mode=dag.mode,
+                tasks={t.id: TaskExecutionState(task_id=t.id) for t in dag.tasks},
+            )
+        state.integrated = False
         store.save_state(state)
 
         integration = self.worktree_manager.create_integration_worktree(
@@ -306,23 +321,39 @@ class FactoryOrchestrator:
 
         for wave in plan.waves:
             wave_results: dict[str, TaskExecutionState] = {}
-            max_workers = min(self.config.max_workers, len(wave))
-            with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                futures = {
-                    pool.submit(
-                        self._execute_task,
-                        dag=dag,
-                        task=task,
-                        base_ref=wave_base_ref,
-                        store=store,
-                        state=state,
-                        keep_worktrees=keep_worktrees,
-                    ): task.id
-                    for task in wave
-                }
-                for fut in as_completed(futures):
-                    tid = futures[fut]
-                    wave_results[tid] = fut.result()
+            to_run: list[TaskSpec] = []
+            for task in wave:
+                existing = state.tasks[task.id]
+                if (
+                    existing.status == TaskStatus.PASSED
+                    and existing.branch
+                    and self.worktree_manager.ensure_branch_exists(existing.branch)
+                ):
+                    wave_results[task.id] = existing
+                else:
+                    existing.status = TaskStatus.PENDING
+                    existing.escalation_reason = None
+                    to_run.append(task)
+
+            if to_run:
+                max_workers = min(self.config.max_workers, len(to_run))
+                with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                    futures = {
+                        pool.submit(
+                            self._execute_task,
+                            dag=dag,
+                            task=task,
+                            base_ref=wave_base_ref,
+                            store=store,
+                            state=state,
+                            keep_worktrees=keep_worktrees,
+                            cross_model_review=use_cross_model,
+                        ): task.id
+                        for task in to_run
+                    }
+                    for fut in as_completed(futures):
+                        tid = futures[fut]
+                        wave_results[tid] = fut.result()
 
             for task in wave:
                 t_state = wave_results[task.id]
@@ -415,6 +446,28 @@ class FactoryOrchestrator:
         store.save_state(state)
         return state
 
+    def resume_run(
+        self,
+        run_id: str,
+        *,
+        create_pr: bool = False,
+        keep_worktrees: bool = False,
+        cross_model_review: bool | None = None,
+    ) -> RunState:
+        """Resume an interrupted or escalated run, reusing already-PASSED task branches."""
+        store = RunStore(self.repo_root, run_id)
+        if not store.dag_path.is_file() or not store.state_path.is_file():
+            raise FileNotFoundError(f"Run `{run_id}` not found in {store.run_dir}")
+        dag = store.load_dag()
+        prior_state = store.load_state()
+        return self.run_dag(
+            dag,
+            create_pr=create_pr,
+            keep_worktrees=keep_worktrees,
+            cross_model_review=cross_model_review,
+            resume_state=prior_state,
+        )
+
     def _execute_task(
         self,
         *,
@@ -424,6 +477,7 @@ class FactoryOrchestrator:
         store: RunStore,
         state: RunState,
         keep_worktrees: bool,
+        cross_model_review: bool = True,
     ) -> TaskExecutionState:
         t_state = state.tasks[task.id]
         t_dir = store.task_dir(task.id)
@@ -530,10 +584,11 @@ class FactoryOrchestrator:
 
             t_state.status = TaskStatus.REVIEWING
             t_state.review_rounds += 1
+            exclude_reviewers = (worker.name,) if cross_model_review else ()
             reviewer = self.registry.pick_adapter(
                 "reviewer",
                 preferred=task.reviewer_adapter,
-                exclude=(worker.name,),
+                exclude=exclude_reviewers,
                 allow_fallback_to_excluded=True,
             )
             t_state.reviewer_adapter = reviewer.name
@@ -547,11 +602,62 @@ class FactoryOrchestrator:
                     cwd=str(wt.path),
                     role=AgentRole.REVIEWER,
                     transcript_path=str(t_dir / f"reviewer_r{t_state.review_rounds}.log"),
-                    timeout_seconds=self.config.task_timeout_seconds,
+                    timeout_seconds=self.config.reviewer_timeout_seconds,
                     read_only=True,
                     json_schema=REVIEW_VERDICT_SCHEMA,
                 )
             )
+            # If the reviewer CLI itself timed out or crashed, try one fallback reviewer
+            # before escalating; never send an already-passing worker back to re-edit code.
+            if not review_res.ok:
+                fallback = None
+                try:
+                    fallback = self.registry.pick_adapter(
+                        "reviewer",
+                        preferred=None,
+                        exclude=(reviewer.name,),
+                        allow_fallback_to_excluded=False,
+                    )
+                except AdapterResolutionError:
+                    fallback = None
+                if fallback is not None and fallback.name != reviewer.name:
+                    reviewer = fallback
+                    t_state.reviewer_adapter = reviewer.name
+                    store.save_state(state)
+                    review_res = reviewer.run(
+                        AgentInvocation(
+                            prompt=review_prompt,
+                            cwd=str(wt.path),
+                            role=AgentRole.REVIEWER,
+                            transcript_path=str(
+                                t_dir / f"reviewer_r{t_state.review_rounds}_fallback.log"
+                            ),
+                            timeout_seconds=self.config.reviewer_timeout_seconds,
+                            read_only=True,
+                            json_schema=REVIEW_VERDICT_SCHEMA,
+                        )
+                    )
+
+            if not review_res.ok:
+                t_state.status = TaskStatus.ESCALATED
+                t_state.escalation_reason = (
+                    f"Reviewer CLI `{reviewer.name}` infrastructure failure "
+                    f"(exit={review_res.exit_code}, timed_out={review_res.timed_out}). "
+                    f"Passing worker commit `{t_state.commit_sha}` preserved on `{t_state.branch}`; "
+                    f"fix reviewer config or rerun with `--no-cross-model` and `cf resume {dag.run_id}`."
+                )
+                self.ratchet.record(
+                    RatchetEntry(
+                        run_id=dag.run_id,
+                        task_id=task.id,
+                        source="review",
+                        rule="reviewer-infra-failure",
+                        summary=t_state.escalation_reason,
+                    )
+                )
+                store.save_state(state)
+                return t_state
+
             verdict = _parse_review_verdict(
                 review_res.parsed_json, review_res.final_message, reviewer.name
             )

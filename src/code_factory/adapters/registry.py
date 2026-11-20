@@ -52,7 +52,9 @@ class AdapterRegistry:
         routing: dict[str, list[str]],
     ) -> AdapterRegistry:
         built = {
-            name: build_adapter(name, cfg) for name, cfg in adapter_configs.items()
+            name: build_adapter(name, cfg)
+            for name, cfg in adapter_configs.items()
+            if cfg.get("enabled", True) is not False
         }
         return cls(adapters=built, routing=routing)
 
@@ -88,12 +90,15 @@ class AdapterRegistry:
         candidates: list[str] = []
         if preferred:
             candidates.append(preferred)
-        for name in self._routing.get(role, []):
+        routed = self._routing.get(role, [])
+        for name in routed:
             if name not in candidates:
                 candidates.append(name)
-        for name in self._adapters:
-            if name not in candidates:
-                candidates.append(name)
+        # Only fall back to arbitrary configured adapters when routing[role] is unset.
+        if not routed and not preferred:
+            for name in self._adapters:
+                if name not in candidates:
+                    candidates.append(name)
 
         excluded_set = set(exclude)
         for name in candidates:

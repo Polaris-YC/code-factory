@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 from fnmatch import fnmatch
+import subprocess
 
 from code_factory.core.models import TaskDAG, TaskSpec
 
@@ -46,11 +47,31 @@ def paths_may_overlap(patterns_a: list[str], patterns_b: list[str]) -> bool:
     return False
 
 
+def validate_done_checks_syntax(task: TaskSpec) -> None:
+    """Statically validate shell syntax of task done_checks using `sh -n`."""
+    for idx, cmd in enumerate(task.done_checks, start=1):
+        if not cmd.strip():
+            raise DAGValidationError(
+                f"Task '{task.id}' done_check #{idx} is empty."
+            )
+        proc = subprocess.run(
+            ["sh", "-n", "-c", cmd],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            err = (proc.stderr or proc.stdout).strip()
+            raise DAGValidationError(
+                f"Task '{task.id}' done_check #{idx} has invalid shell syntax: {err} (cmd={cmd!r})"
+            )
+
+
 def validate_and_plan(
     dag: TaskDAG,
     allow_parallel_overlap: bool = False,
 ) -> ExecutionPlan:
-    """Validate TaskDAG acyclicity, dependencies, and parallel scope isolation."""
+    """Validate TaskDAG acyclicity, dependencies, shell syntax, and parallel scope isolation."""
     if not dag.tasks:
         raise DAGValidationError("TaskDAG must contain at least one task.")
 
@@ -60,6 +81,7 @@ def validate_and_plan(
             raise DAGValidationError("Task id must be non-empty.")
         if task.id in by_id:
             raise DAGValidationError(f"Duplicate task id: '{task.id}'")
+        validate_done_checks_syntax(task)
         by_id[task.id] = task
 
     indegree: dict[str, int] = {tid: 0 for tid in by_id}
