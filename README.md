@@ -43,7 +43,10 @@ PYTHONPATH=src python3 -m code_factory gate --repo /path/to/target-repo
 # 4. Run a Task DAG across the multi-CLI cluster
 PYTHONPATH=src python3 -m code_factory run --dag tasks.json --repo /path/to/target-repo
 
-# 5. Install plugin/skills for Antigravity, Claude Code, and Codex
+# 5. Run an architect-guided (agy) + parallel heavy (codex) read-only full-repo code review
+PYTHONPATH=src python3 -m code_factory audit --repo /path/to/target-repo --lead agy --reviewer codex --workers 4
+
+# 6. Install plugin/skills for Antigravity, Claude Code, and Codex
 PYTHONPATH=src python3 -m code_factory install --target all --scope global --dry-run
 ```
 

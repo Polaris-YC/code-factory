@@ -12,6 +12,8 @@ description: >-
 
 Implements @poteto's **Mistake -> Rule -> Gate** feedback loop so an agent never makes the same mistake twice.
 
+> **CLI Resolution**: Use `cf <cmd>` if installed on `PATH`; otherwise run `PYTHONPATH=~/.gemini/config/plugins/code-factory/src python3 -m code_factory <cmd>`.
+
 ## Steps
 
 1. **Inspect the Ratchet Inbox**:

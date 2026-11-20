@@ -11,6 +11,8 @@ description: >-
 
 Operationalizes @poteto's core rule: **harden the inner loop before scaling throughput.**
 
+> **CLI Resolution**: Use `cf <cmd>` if installed on `PATH`; otherwise run `PYTHONPATH=~/.gemini/config/plugins/code-factory/src python3 -m code_factory <cmd>`.
+
 ## Steps
 
 1. **Scaffold Config**:

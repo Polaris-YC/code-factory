@@ -8,5 +8,6 @@ build/
 .ruff_cache/
 .venv/
 .code-factory/runs/
+.code-factory/audits/
 .code-factory/worktrees/
 .code-factory/ratchet_inbox.jsonl

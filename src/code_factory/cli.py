@@ -10,6 +10,7 @@ from pathlib import Path
 
 from code_factory.adapters.registry import AdapterRegistry
 from code_factory.config import load_config, render_default_factory_toml
+from code_factory.core.auditor import RepoAuditor
 from code_factory.core.installer import install_bundle
 from code_factory.core.models import FactoryMode, TaskDAG
 from code_factory.core.orchestrator import FactoryOrchestrator
@@ -170,6 +171,30 @@ def _cmd_ratchet(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_audit(args: argparse.Namespace) -> int:
+    repo = Path(args.repo).expanduser().resolve()
+    config = load_config(repo)
+    registry = AdapterRegistry.from_config(config.adapters, config.routing)
+    auditor = RepoAuditor(repo_root=repo, config=config, registry=registry)
+    result = auditor.run_audit(
+        lead_adapter=None if args.no_lead else args.lead,
+        reviewer_adapter=args.reviewer,
+        max_workers=args.workers,
+        focus=args.focus,
+        synthesize=not args.no_synth,
+        audit_id=args.audit_id,
+    )
+    print(
+        f"Audit `{result.audit_id}` complete: "
+        f"{len(result.findings)} finding(s) across {len(result.plan.shards)} shard(s) "
+        f"(lead={result.lead_adapter or 'none'}, reviewer={result.reviewer_adapter}, "
+        f"errors={len(result.shard_errors)})."
+    )
+    print(f"Report: {result.report_path}")
+    print(f"Data:   {result.data_path}")
+    return 0 if not result.shard_errors else 2
+
+
 def _cmd_install(args: argparse.Namespace) -> int:
     actions = install_bundle(
         package_root=_package_root(),
@@ -232,6 +257,49 @@ def build_parser() -> argparse.ArgumentParser:
     p_ratchet = sub.add_parser("ratchet", help="Summarize recurring mistakes in the ratchet inbox.")
     p_ratchet.add_argument("--repo", default=".", help="Target repository path.")
     p_ratchet.set_defaults(func=_cmd_ratchet)
+
+    p_audit = sub.add_parser(
+        "audit",
+        help="Run an architect-guided parallel read-only full-repo code review.",
+    )
+    p_audit.add_argument("--repo", default=".", help="Target repository path.")
+    p_audit.add_argument(
+        "--lead",
+        default="agy",
+        help="Lead architect CLI that plans shards and synthesizes findings (default: agy).",
+    )
+    p_audit.add_argument(
+        "--no-lead",
+        action="store_true",
+        help="Disable lead architect CLI and use deterministic directory sharding.",
+    )
+    p_audit.add_argument(
+        "--reviewer",
+        default="codex",
+        help="Parallel read-only reviewer CLI used for heavy shard scanning (default: codex).",
+    )
+    p_audit.add_argument(
+        "--workers",
+        type=int,
+        default=3,
+        help="Maximum parallel shard reviewer workers (default: 3).",
+    )
+    p_audit.add_argument(
+        "--focus",
+        default=None,
+        help="Optional domain-specific audit focus (e.g. lookahead bias, numerical stability).",
+    )
+    p_audit.add_argument(
+        "--no-synth",
+        action="store_true",
+        help="Skip final lead architect executive synthesis pass.",
+    )
+    p_audit.add_argument(
+        "--audit-id",
+        default=None,
+        help="Optional custom audit identifier.",
+    )
+    p_audit.set_defaults(func=_cmd_audit)
 
     p_inst = sub.add_parser("install", help="Install plugin/skills into Antigravity, Claude Code, or Codex.")
     p_inst.add_argument(

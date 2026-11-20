@@ -10,7 +10,9 @@ description: >-
 
 # Code Factory — Master Orchestrator ("Factory Foreman")
 
-This skill turns the host agent into the **Factory Foreman**, coordinating a heterogeneous cluster of coding CLIs via the deterministic `cf` (`python3 -m code_factory`) engine.
+This skill turns the host agent into the **Factory Foreman**, coordinating a heterogeneous cluster of coding CLIs via the deterministic `cf` engine.
+
+> **CLI Resolution**: Use `cf <cmd>` if installed on `PATH`; otherwise run `PYTHONPATH=~/.gemini/config/plugins/code-factory/src python3 -m code_factory <cmd>`.
 
 ## Workflow
 

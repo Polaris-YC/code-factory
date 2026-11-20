@@ -46,3 +46,15 @@ Return strictly valid JSON:
   ]
 }
 ```
+
+## Full-Repo Architect-Guided Audit (`cf audit`)
+
+> **CLI Resolution**: Use `cf <cmd>` if installed on `PATH`; otherwise run `PYTHONPATH=~/.gemini/config/plugins/code-factory/src python3 -m code_factory <cmd>`.
+
+To audit an entire repository in read-only mode (e.g., using `agy` as Audit Director to partition shards & synthesize findings while parallel `codex` workers do the heavy line-by-line scanning):
+
+```bash
+cf audit --repo /path/to/repo --lead agy --reviewer codex --workers 4 --focus "<domain risks>"
+```
+
+Outputs are written to `<repo>/.code-factory/audits/<audit_id>/audit_report.md` and `audit_data.json`.
