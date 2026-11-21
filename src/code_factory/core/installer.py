@@ -57,7 +57,6 @@ def install_bundle(
 ) -> list[InstallAction]:
     """Install Code Factory plugin/skills into Antigravity, Claude Code, and/or Codex."""
     pkg = resolve_bundle_root(package_root)
-    skills_dir = pkg / "skills"
     actions: list[InstallAction] = []
 
     targets = ["antigravity", "claude", "codex"] if target == "all" else [target]
@@ -75,7 +74,7 @@ def install_bundle(
             actions.append(InstallAction("antigravity", pkg, dst, mode))
         elif harness in {"claude", "codex"}:
             base = (home if scope == "global" else ws) / f".{harness}" / "skills"
-            for skill in sorted(skills_dir.iterdir()):
+            for skill in sorted((pkg / "skills").iterdir()):
                 if skill.is_dir() and (skill / "SKILL.md").is_file():
                     dst = base / skill.name
                     mode = _link_or_copy(skill, dst, copy=copy, dry_run=dry_run)

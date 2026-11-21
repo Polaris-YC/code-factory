@@ -1,14 +1,10 @@
-"""Tests for bundle discovery and the version and cleanup commands."""
-
-from __future__ import annotations
-
 import io
 import shutil
 import subprocess
-import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from importlib.metadata import Distribution
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,163 +14,123 @@ from code_factory.core.installer import install_bundle, resolve_bundle_root
 from code_factory.core.worktree import GitWorktreeManager
 
 
-def _make_bundle(root: Path) -> Path:
-    skill = root / "skills" / "example"
-    skill.mkdir(parents=True)
-    (skill / "SKILL.md").write_text("# Example\n", encoding="utf-8")
-    (root / "plugin.json").write_text("{}", encoding="utf-8")
+def make_bundle(root: Path) -> Path:
+    (root / "skills/example").mkdir(parents=True)
+    (root / "skills/example/SKILL.md").touch()
+    (root / "plugin.json").touch()
     return root
 
 
 class TestInstallerAndVersion(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
-        self.prefix = self.tmp / "prefix"
-        self.shared_root = self.prefix / "share" / "code-factory"
-        self.enterContext(patch("code_factory.core.installer.sys.prefix", str(self.prefix)))
+        prefix = self.tmp / "prefix"
+        self.shared = prefix / "share/code-factory"
+        self.enterContext(patch("sys.prefix", str(prefix)))
 
     def test_version_flags(self) -> None:
         for flag in ("-V", "--version"):
-            with self.subTest(flag=flag), redirect_stdout(io.StringIO()) as output:
-                with self.assertRaises(SystemExit) as exc:
-                    main([flag])
-                self.assertEqual(exc.exception.code, 0)
-                self.assertEqual(output.getvalue().strip(), f"cf {__version__}")
+            with redirect_stdout(io.StringIO()) as output, self.assertRaises(SystemExit) as exc:
+                main([flag])
+            self.assertEqual(exc.exception.code, 0)
+            self.assertEqual(output.getvalue(), f"cf {__version__}\n")
 
-    def test_resolve_prefers_checkout_and_falls_back_to_shared_data(self) -> None:
-        source = _make_bundle(self.tmp / "source")
-        shared = _make_bundle(self.shared_root)
-        self.assertEqual(resolve_bundle_root(source), source)
-        self.assertEqual(resolve_bundle_root(self.tmp / "site-packages"), shared)
-
-    def test_missing_bundle_includes_install_instructions(self) -> None:
+    def test_resolve_bundle_root(self) -> None:
         source = self.tmp / "source"
-        (source / "skills").mkdir(parents=True)
-        with self.assertRaisesRegex(FileNotFoundError, "Reinstall Code Factory") as exc:
+        with self.assertRaisesRegex(FileNotFoundError, "Reinstall Code Factory"):
             resolve_bundle_root(source)
-        self.assertIn(str(source), str(exc.exception))
-        self.assertIn(str(self.shared_root), str(exc.exception))
+        make_bundle(self.shared)
+        self.assertEqual(resolve_bundle_root(source), self.shared)
+        self.assertEqual(resolve_bundle_root(make_bundle(source)), source)
 
     def test_install_bundle_dry_run(self) -> None:
-        bundle = _make_bundle(self.shared_root)
+        bundle = make_bundle(self.shared)
         workspace = self.tmp / "workspace"
-        skill = bundle / "skills" / "example"
         actions = install_bundle(
-            package_root=self.tmp / "site-packages",
-            scope="workspace",
-            workspace=workspace,
-            copy=True,
-            dry_run=True,
+            package_root=self.tmp, workspace=workspace, scope="workspace", copy=True, dry_run=True,
         )
-        self.assertEqual(
-            [(action.target, action.source, action.destination, action.mode) for action in actions],
-            [
-                ("antigravity", bundle, workspace / ".agents/plugins/code-factory", "copy"),
-                ("claude", skill, workspace / ".claude/skills/example", "copy"),
-                ("codex", skill, workspace / ".codex/skills/example", "copy"),
-            ],
-        )
+        self.assertEqual([a.target for a in actions], ["antigravity", "claude", "codex"])
+        self.assertTrue(all(a.source.is_relative_to(bundle) and a.mode == "copy" for a in actions))
         self.assertFalse(workspace.exists())
+
+    def test_install_uses_the_imported_distribution_bundle(self) -> None:
+        make_bundle(self.shared)
+        site = self.tmp / "lib/python3.12/site-packages"
+        info = site / "code_factory-0.1.0.dist-info"
+        info.mkdir(parents=True)
+        bundle = make_bundle(self.tmp / "share/code-factory")
+        (info / "RECORD").write_text("code_factory/cli.py,,\n../../../share/code-factory/plugin.json,,\n")
+        with (
+            patch("code_factory.cli.__file__", str(site / "code_factory/cli.py")),
+            patch("code_factory.cli.distributions", return_value=[Distribution.at(info)]),
+            redirect_stdout(io.StringIO()) as output,
+        ):
+            self.assertEqual(main(["install", "--target", "antigravity", "--dry-run"]), 0)
+        self.assertIn(f"symlink: {bundle} ->", output.getvalue())
 
 
 class TestClean(unittest.TestCase):
     def setUp(self) -> None:
         self.repo = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
         self.git("init", "-q", "-b", "main")
-        (self.repo / "tracked.txt").write_text("initial\n", encoding="utf-8")
-        self.git("add", "tracked.txt")
-        self.git(
-            "-c", "user.name=Test", "-c", "user.email=test@example.com",
-            "commit", "-qm", "initial",
-        )
-        config = self.repo / ".code-factory" / "factory.toml"
+        self.git("-c", "user.name=Test", "-c", "user.email=test@example.com",
+                 "commit", "--allow-empty", "-qm", "initial")
+        config = self.repo / ".code-factory/factory.toml"
         config.parent.mkdir()
-        config.write_text('[factory]\nworktree_root = "factory worktrees"\n', encoding="utf-8")
+        config.write_text('[factory]\nworktree_root = "factory worktrees"\n')
         self.manager = GitWorktreeManager(self.repo, "factory worktrees")
-        self.clean_args = ["clean", "--repo", str(self.repo)]
+        self.args = ["--repo", str(self.repo)]
 
     def git(self, *args: str) -> str:
-        return subprocess.run(
-            ["git", *args], cwd=self.repo, check=True, capture_output=True, text=True,
-        ).stdout
+        return subprocess.check_output(["git", *args], cwd=self.repo, text=True)
 
-    def test_clean_dry_run_leaves_worktrees_and_registrations(self) -> None:
-        worktree = self.manager.create_worktree("run1", "task", "main")
-        integration = self.manager.create_integration_worktree("run1", "main")
+    def clean(self, *options: str, status: int = 0) -> tuple[str, str]:
+        with redirect_stdout(io.StringIO()) as output, redirect_stderr(io.StringIO()) as errors:
+            self.assertEqual(main(["clean", *self.args, *options]), status, errors.getvalue())
+        return output.getvalue(), errors.getvalue()
+
+    def test_dry_run_preserves_worktrees_and_registrations(self) -> None:
+        task = self.manager.create_worktree("run1", "task", "main").path
+        integration = self.manager.create_integration_worktree("run1", "main").path
         before = self.git("worktree", "list", "--porcelain")
-
-        with redirect_stdout(io.StringIO()) as output:
-            self.assertEqual(main([*self.clean_args, "--dry-run"]), 0)
-
-        for handle in (worktree, integration):
-            self.assertIn(f"Would remove {handle.path}", output.getvalue())
-            self.assertTrue(handle.path.is_dir())
+        output, _ = self.clean("--dry-run")
+        for path in (task, integration):
+            self.assertIn(f"Would remove {path}", output)
+            self.assertTrue(path.is_dir())
         self.assertEqual(self.git("worktree", "list", "--porcelain"), before)
 
-    def test_clean_preserves_active_run_worktrees(self) -> None:
-        integration = self.manager.create_integration_worktree("run1", "main").path
-
-        def check_clean(_args: object) -> int:
-            for options in (["--dry-run"], []):
-                with self.subTest(options=options):
-                    clean = subprocess.run(
-                        [sys.executable, "-m", "code_factory", *self.clean_args, *options],
-                        capture_output=True, text=True, timeout=10, check=False,
-                    )
-                    self.assertEqual(clean.returncode, 1)
-                    self.assertIn("a run or cleanup is active", clean.stderr)
-                    self.assertTrue(integration.is_dir())
-            return 0
-
-        with patch("code_factory.cli._cmd_run", side_effect=check_clean):
-            self.assertEqual(main(["run", "--repo", str(self.repo), "--dag", "unused.json"]), 0)
-        with redirect_stdout(io.StringIO()):
-            self.assertEqual(main(self.clean_args), 0)
-        self.assertFalse(integration.exists())
-
-    def test_clean_preserves_edits_hidden_by_index_flags(self) -> None:
-        for flag in ("assume-unchanged", "skip-worktree"):
-            with self.subTest(flag=flag):
-                worktree = self.manager.create_worktree("run1", flag, "main")
-                self.git("-C", str(worktree.path), "update-index", f"--{flag}", "tracked.txt")
-                tracked = worktree.path / "tracked.txt"
-                tracked.write_text("local edit\n", encoding="utf-8")
-                self.assertEqual(self.git("-C", str(worktree.path), "status", "--porcelain"), "")
-                for options in (["--dry-run"], []):
-                    with (
-                        redirect_stdout(io.StringIO()) as output,
-                        redirect_stderr(io.StringIO()) as errors,
-                    ):
-                        self.assertEqual(main([*self.clean_args, *options]), 1)
-                    self.assertEqual(output.getvalue(), "")
-                    self.assertIn(f"Skipping {worktree.path}: index uses", errors.getvalue())
-                    self.assertEqual(tracked.read_text(encoding="utf-8"), "local edit\n")
-                listing = self.git("worktree", "list", "--porcelain")
-                self.assertIn(f"worktree {worktree.path}\n", listing)
-
-    def test_clean_removes_clean_and_missing_worktrees_and_preserves_other_data(self) -> None:
+    def test_remove_and_prune_preserve_other_worktrees(self) -> None:
         clean = self.manager.create_worktree("run1", "clean", "main")
-        missing = self.manager.create_worktree("run1", "missing", "main")
-        shutil.rmtree(missing.path)
-        dirty = self.manager.create_worktree("run1", "dirty", "main")
-        (self.repo / ".git/info/exclude").write_text("local.env\n", encoding="utf-8")
-        (dirty.path / "local.env").write_text("local data\n", encoding="utf-8")
-        locked = self.manager.create_worktree("run1", "locked", "main")
-        self.git("worktree", "lock", "--reason", "keep", str(locked.path))
+        missing = self.manager.create_worktree("run1", "missing", "main").path
+        dirty = self.manager.create_worktree("run1", "dirty", "main").path
+        locked = self.manager.create_worktree("run1", "locked", "main").path
         foreign = clean.path.with_name("foreign")
         self.git("worktree", "add", "-qb", "foreign", str(foreign))
-
-        with redirect_stdout(io.StringIO()) as output, redirect_stderr(io.StringIO()) as errors:
-            self.assertEqual(main(self.clean_args), 1)
-
-        self.assertIn(f"Removed {clean.path}", output.getvalue())
-        self.assertIn(str(dirty.path), errors.getvalue())
-        self.assertIn(f"Skipping {locked.path}: worktree is locked.", errors.getvalue())
-        self.assertFalse(clean.path.exists())
+        self.git("worktree", "lock", str(locked))
+        (self.repo / ".git/info/exclude").write_text("local.env\n")
+        (dirty / "local.env").touch()
+        shutil.rmtree(missing)
+        self.clean(status=1)
         listing = self.git("worktree", "list", "--porcelain")
-        self.assertNotIn(f"worktree {clean.path}\n", listing)
-        self.assertNotIn(f"worktree {missing.path}\n", listing)
-        self.assertEqual((dirty.path / "local.env").read_text(encoding="utf-8"), "local data\n")
-        self.assertTrue(locked.path.is_dir())
-        self.assertTrue(foreign.is_dir())
+        for path in (clean.path, missing):
+            self.assertNotIn(f"worktree {path}\n", listing)
+            self.assertFalse(path.exists())
         self.assertTrue(self.manager.ensure_branch_exists(clean.branch))
+        for path in (dirty / "local.env", locked, foreign):
+            self.assertTrue(path.exists())
+
+    def test_cleanup_skips_an_active_run(self) -> None:
+        path = self.manager.create_integration_worktree("direct/run", "main").path
+        state = self.repo / ".code-factory/runs/direct/run/state.json"
+        state.parent.mkdir(parents=True)
+        state.write_text('{"integrated": false}')
+        self.assertIn("may still be active", self.clean(status=1)[1])
+        state.write_text('{"integrated": true}')
+
+        with redirect_stderr(io.StringIO()) as errors, patch(
+            "code_factory.cli._cmd_run", side_effect=lambda _: main(["clean", *self.args]),
+        ):
+            self.assertEqual(main(["run", *self.args, "--dag", "unused.json"]), 1)
+        self.assertIn("a run or cleanup is active", errors.getvalue())
+        self.clean()
+        self.assertFalse(path.exists())

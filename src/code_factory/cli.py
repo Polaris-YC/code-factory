@@ -6,9 +6,11 @@ import argparse
 import json
 import os
 import shutil
+import subprocess
 import sys
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
+from importlib.metadata import distributions
 from pathlib import Path
 
 from code_factory import __version__
@@ -25,7 +27,14 @@ from code_factory.gates.runner import GateRunner
 
 
 def _package_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+    module = Path(__file__).resolve()
+    for installed in distributions(name="code-factory"):
+        if Path(str(installed.locate_file("code_factory/cli.py"))).resolve() != module:
+            continue
+        for file in installed.files or ():
+            if file.parts[-3:] == ("share", "code-factory", "plugin.json"):
+                return Path(str(file.locate())).parent
+    return module.parents[2]
 
 
 @contextmanager
@@ -38,18 +47,15 @@ def _lock_worktrees(repo: Path, *, exclusive: bool) -> Iterator[None]:
         yield
         return
 
-    # All linked checkouts share this directory, so dry-run needs no lock file.
     common_dir = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=repo)
     fd = os.open(common_dir.stdout.removesuffix("\n"), os.O_RDONLY | os.O_DIRECTORY)
+    mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
     try:
-        mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
         try:
             fcntl.flock(fd, mode | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             active = "a run or cleanup is active" if exclusive else "cleanup is active"
-            raise GitError(
-                f"Code Factory worktrees in {repo} are busy: {active}. Try again later."
-            ) from exc
+            raise GitError(f"Code Factory worktrees in {repo} are busy: {active}.") from exc
         yield
     finally:
         os.close(fd)
@@ -224,18 +230,71 @@ def _cmd_ratchet(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_may_be_active(repo: Path, run_id: Path) -> bool:
+    run_dir = repo / ".code-factory" / "runs" / run_id
+    try:
+        state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return (run_dir / "dag.json").exists()
+    except (UnicodeError, json.JSONDecodeError):
+        return True
+    # Successful integration is recorded in the final state write.
+    return not (isinstance(state, dict) and state.get("integrated") is True)
+
+
+@contextmanager
+def _hold_integration_ref(repo: Path, run_id: Path) -> Iterator[None]:
+    # A direct orchestrator run must recreate this ref before starting any workers.
+    ref = f"refs/heads/cf/{run_id.as_posix()}/integrate"
+    oid = _git(["rev-parse", "--verify", "--quiet", ref], cwd=repo, check=False).stdout.strip()
+    with subprocess.Popen(
+        ["git", "update-ref", "--stdin"], cwd=repo,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    ) as transaction:
+        assert transaction.stdin is not None and transaction.stdout is not None
+        verify = f"verify {ref} {oid}" if oid else f"verify {ref}"
+        transaction.stdin.write(f"start\n{verify}\nprepare\n")
+        transaction.stdin.flush()
+        replies = (transaction.stdout.readline(), transaction.stdout.readline())
+        if replies != ("start: ok\n", "prepare: ok\n"):
+            raise GitError(f"Could not lock the integration branch for run {run_id}. Try again later.")
+        yield  # Closing stdin aborts the prepared transaction and releases the lock.
+
+
+def _check_clean_worktree(path: Path) -> None:
+    index = _git(["ls-files", "-v", "--stage", "-z"], cwd=path).stdout.split("\0")
+    if any(entry.startswith("S ") or entry[:1].islower() for entry in index):
+        raise GitError(f"Skipping {path}: index uses assume-unchanged or skip-worktree.")
+
+    git_dir = Path(_git(["rev-parse", "--absolute-git-dir"], cwd=path).stdout.removesuffix("\n"))
+    if (git_dir / "modules").is_dir() or any(
+        entry[2:].startswith("160000 ") and (path / entry.partition("\t")[2] / ".git").exists()
+        for entry in index
+    ):
+        raise GitError(f"Skipping {path}: worktree contains initialized submodules.")
+
+    status = _git(
+        [
+            "--no-optional-locks", "status", "--porcelain", "--untracked-files=all", "--ignored",
+            "--ignore-submodules=none",
+        ],
+        cwd=path,
+    )
+    if status.stdout:
+        raise GitError(f"Skipping {path}: worktree contains local changes or files.")
+
+
 def _cmd_clean(args: argparse.Namespace) -> int:
     repo = Path(args.repo).expanduser().resolve()
-    config = load_config(repo)
-    root = GitWorktreeManager(repo, config.worktree_root).worktree_root
-    cwd = Path.cwd()
+    root = GitWorktreeManager(repo, load_config(repo).worktree_root).worktree_root
     listing = _git(["worktree", "list", "--porcelain", "-z"], cwd=repo).stdout
+    entries = [entry.split("\0") for entry in listing.rstrip("\0").split("\0\0")]
+    checkouts = {Path(location.removeprefix("worktree ")) for location, *_ in entries} | {repo}
 
     result = 0
-    for entry in listing.rstrip("\0").split("\0\0")[1:]:  # Skip the main worktree.
-        location, *attributes = entry.split("\0")
+    for location, *attributes in entries[1:]:  # Skip the main worktree.
         path = Path(location.removeprefix("worktree "))
-        if not path.is_relative_to(root) or path == root:
+        if not path.is_relative_to(root):
             continue
         relative = path.relative_to(root)
         branches = {f"branch refs/heads/cf/{relative.as_posix()}"}
@@ -245,33 +304,24 @@ def _cmd_clean(args: argparse.Namespace) -> int:
             continue
 
         try:
-            if path.resolve() != path or repo.is_relative_to(path) or cwd.is_relative_to(path):
+            if path.resolve() != path or repo.is_relative_to(path) or Path.cwd().is_relative_to(path):
                 raise GitError(f"Skipping {path}: worktree is in use or its path changed.")
-            if any(attribute.partition(" ")[0] == "locked" for attribute in attributes):
+            if any(attr.partition(" ")[0] == "locked" for attr in attributes):
                 raise GitError(f"Skipping {path}: worktree is locked.")
-            if path.exists():
-                index = _git(["-c", "core.quotePath=true", "ls-files", "-v"], cwd=path).stdout
-                if any(line.startswith("S ") or line[:1].islower() for line in index.splitlines()):
-                    raise GitError(
-                        f"Skipping {path}: index uses assume-unchanged or skip-worktree."
-                    )
-                status = _git(
-                    [
-                        "--no-optional-locks",
-                        "status",
-                        "--porcelain",
-                        "--untracked-files=all",
-                        "--ignored",
-                    ],
-                    cwd=path,
-                )
-                if status.stdout:
-                    raise GitError(f"Skipping {path}: worktree contains local changes or files.")
-            if args.dry_run:
-                print(f"[DRY-RUN] Would remove {path}")
-            else:
-                _git(["worktree", "remove", "--", str(path)], cwd=repo)
-                print(f"Removed {path}")
+            run_id = relative.parent
+            if any(_run_may_be_active(checkout, run_id) for checkout in checkouts):
+                raise GitError(f"Skipping {path}: run {run_id} may still be active.")
+            with nullcontext() if args.dry_run else _hold_integration_ref(repo, run_id):
+                if not args.dry_run and any(_run_may_be_active(p, run_id) for p in checkouts):
+                    raise GitError(f"Skipping {path}: run {run_id} became active.")
+                if path.exists():
+                    _check_clean_worktree(path)
+                if args.dry_run:
+                    print(f"[DRY-RUN] Would remove {path}")
+                else:
+                    # Git also removes the registration when the checkout is already missing.
+                    _git(["worktree", "remove", "--", str(path)], cwd=repo)
+                    print(f"Removed {path}")
         except (GitError, OSError) as exc:
             print(exc, file=sys.stderr)
             result = 1
