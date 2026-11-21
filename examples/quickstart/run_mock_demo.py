@@ -1,5 +1,6 @@
 """Run the offline quickstart with PYTHONPATH=src python3 examples/quickstart/run_mock_demo.py."""
 
+import os
 import shlex
 import subprocess
 import sys
@@ -97,6 +98,10 @@ def run_demo(repo: Path) -> int:
 
 
 def main() -> int:
+    git_env_vars = subprocess.check_output(["git", "rev-parse", "--local-env-vars"], text=True)
+    for name in git_env_vars.splitlines():
+        os.environ.pop(name, None)
+
     with TemporaryDirectory(prefix="code-factory-demo-") as directory:
         return run_demo(Path(directory).resolve())
 

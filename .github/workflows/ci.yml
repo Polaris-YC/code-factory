@@ -19,6 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-python@v7
         with:
@@ -26,7 +27,15 @@ jobs:
       - name: Run unit tests
         run: PYTHONPATH=src python3 -W error::ResourceWarning -m unittest discover -s tests -v
       - name: Run repository gates
-        run: PYTHONPATH=src python3 -m code_factory gate --repo .
+        env:
+          GATE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ "${GATE_BASE:?Missing Git comparison base}" = 0000000000000000000000000000000000000000 ]; then
+            GATE_BASE=$(git hash-object -w -t tree --stdin </dev/null)
+          elif ! git cat-file -e "${GATE_BASE}^{commit}"; then
+            git fetch --no-tags origin "$GATE_BASE"
+          fi
+          PYTHONPATH=src python3 -m code_factory gate --repo . --base "$GATE_BASE"
       - name: Run offline quickstart
         env:
           PYTHONWARNINGS: error::ResourceWarning
