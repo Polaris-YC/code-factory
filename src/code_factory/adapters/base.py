@@ -75,6 +75,44 @@ def extract_json_object(text: str) -> dict[str, Any] | None:
     return None
 
 
+def normalize_strict_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of `schema` compatible with OpenAI/Codex strict output schemas.
+
+    Strict structured-output validators require every object schema to set
+    `"additionalProperties": false` and list all declared property keys in `required`
+    (widening previously optional properties to allow `null`).
+    """
+    node: dict[str, Any] = dict(schema)
+
+    props = node.get("properties")
+    if isinstance(props, dict):
+        original_required = set(node.get("required") or [])
+        normalized_props: dict[str, Any] = {}
+        for key, prop_schema in props.items():
+            if isinstance(prop_schema, dict):
+                child = normalize_strict_json_schema(prop_schema)
+                if key not in original_required and "type" in child:
+                    prop_type = child["type"]
+                    if isinstance(prop_type, str) and prop_type != "null":
+                        child["type"] = [prop_type, "null"]
+                    elif isinstance(prop_type, list) and "null" not in prop_type:
+                        child["type"] = [*prop_type, "null"]
+                normalized_props[key] = child
+            else:
+                normalized_props[key] = prop_schema
+        node["properties"] = normalized_props
+        node["required"] = list(normalized_props.keys())
+        node.setdefault("additionalProperties", False)
+    elif node.get("type") == "object":
+        node.setdefault("additionalProperties", False)
+
+    items = node.get("items")
+    if isinstance(items, dict):
+        node["items"] = normalize_strict_json_schema(items)
+
+    return node
+
+
 class BaseAdapter(ABC):
     """Abstract base class for all CLI coding agent adapters."""
 
@@ -156,8 +194,9 @@ class BaseAdapter(ABC):
         schema_file: Path | None = None
         if invocation.json_schema is not None:
             schema_file = transcript.with_suffix(".schema.json")
+            normalized_schema = normalize_strict_json_schema(invocation.json_schema)
             schema_file.write_text(
-                json.dumps(invocation.json_schema, indent=2),
+                json.dumps(normalized_schema, indent=2),
                 encoding="utf-8",
             )
 

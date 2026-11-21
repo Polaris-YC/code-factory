@@ -176,6 +176,34 @@ class TestAdapters(unittest.TestCase):
         )
         self.assertEqual([c.name for c in cfg_reg.probe_all()], ["codex"])
 
+    def test_normalize_strict_json_schema_for_codex_output_schema(self) -> None:
+        from code_factory.adapters.base import normalize_strict_json_schema
+
+        raw = {
+            "type": "object",
+            "required": ["decision", "issues"],
+            "properties": {
+                "decision": {"type": "string"},
+                "issues": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["message"],
+                        "properties": {
+                            "message": {"type": "string"},
+                            "fix_hint": {"type": "string"},
+                        },
+                    },
+                },
+            },
+        }
+        strict = normalize_strict_json_schema(raw)
+        self.assertFalse(strict["additionalProperties"])
+        item_schema = strict["properties"]["issues"]["items"]
+        self.assertFalse(item_schema["additionalProperties"])
+        self.assertEqual(item_schema["required"], ["message", "fix_hint"])
+        self.assertEqual(item_schema["properties"]["fix_hint"]["type"], ["string", "null"])
+
 
 if __name__ == "__main__":
     unittest.main()
