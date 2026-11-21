@@ -8,6 +8,7 @@ import shutil
 import sys
 from pathlib import Path
 
+from code_factory import __version__
 from code_factory.adapters.registry import AdapterRegistry
 from code_factory.config import load_config, render_default_factory_toml
 from code_factory.core.auditor import RepoAuditor
@@ -16,7 +17,7 @@ from code_factory.core.models import FactoryMode, TaskDAG
 from code_factory.core.orchestrator import FactoryOrchestrator
 from code_factory.core.ratchet import RatchetInbox
 from code_factory.core.state import RunStore
-from code_factory.core.worktree import GitWorktreeManager
+from code_factory.core.worktree import GitError, GitWorktreeManager, _git
 from code_factory.gates.runner import GateRunner
 
 
@@ -193,6 +194,64 @@ def _cmd_ratchet(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_clean(args: argparse.Namespace) -> int:
+    repo = Path(args.repo).expanduser().resolve()
+    config = load_config(repo)
+    root = GitWorktreeManager(repo, config.worktree_root).worktree_root
+    cwd = Path.cwd()
+    try:
+        listing = _git(["worktree", "list", "--porcelain", "-z"], cwd=repo)
+    except (GitError, OSError) as exc:
+        print(exc, file=sys.stderr)
+        return 1
+
+    result = 0
+    for entry in listing.stdout.split("\0\0")[1:]:  # The main worktree is listed first.
+        if not entry:
+            continue
+        location, *attributes = entry.split("\0")
+        path = Path(location.removeprefix("worktree "))
+        if not path.is_relative_to(root) or path == root:
+            continue
+        relative = path.relative_to(root)
+        branches = {f"branch refs/heads/cf/{relative.as_posix()}"}
+        if path.name == "_integrate":
+            branches.add(f"branch refs/heads/cf/{relative.with_name('integrate').as_posix()}")
+        if len(relative.parts) < 2 or branches.isdisjoint(attributes):
+            continue
+
+        try:
+            if path.resolve() != path or repo.is_relative_to(path) or cwd.is_relative_to(path):
+                raise GitError(f"Skipping {path}: worktree is in use or its path changed.")
+            if any(
+                attribute == "locked" or attribute.startswith("locked ")
+                for attribute in attributes
+            ):
+                raise GitError(f"Skipping {path}: worktree is locked.")
+            if path.exists():
+                status = _git(
+                    [
+                        "--no-optional-locks",
+                        "status",
+                        "--porcelain",
+                        "--untracked-files=all",
+                        "--ignored",
+                    ],
+                    cwd=path,
+                )
+                if status.stdout:
+                    raise GitError(f"Skipping {path}: worktree contains local changes or files.")
+            if args.dry_run:
+                print(f"[DRY-RUN] Would remove {path}")
+            else:
+                _git(["worktree", "remove", "--", str(path)], cwd=repo)
+                print(f"Removed {path}")
+        except (GitError, OSError) as exc:
+            print(exc, file=sys.stderr)
+            result = 1
+    return result
+
+
 def _cmd_audit(args: argparse.Namespace) -> int:
     repo = Path(args.repo).expanduser().resolve()
     config = load_config(repo)
@@ -218,14 +277,18 @@ def _cmd_audit(args: argparse.Namespace) -> int:
 
 
 def _cmd_install(args: argparse.Namespace) -> int:
-    actions = install_bundle(
-        package_root=_package_root(),
-        target=args.target,
-        scope=args.scope,
-        workspace=Path(args.workspace).resolve() if args.workspace else None,
-        copy=args.copy,
-        dry_run=args.dry_run,
-    )
+    try:
+        actions = install_bundle(
+            package_root=_package_root(),
+            target=args.target,
+            scope=args.scope,
+            workspace=Path(args.workspace).resolve() if args.workspace else None,
+            copy=args.copy,
+            dry_run=args.dry_run,
+        )
+    except FileNotFoundError as exc:
+        print(exc, file=sys.stderr)
+        return 1
     prefix = "[DRY-RUN] " if args.dry_run else ""
     for act in actions:
         print(f"{prefix}[{act.target}] {act.mode}: {act.source} -> {act.destination}")
@@ -237,6 +300,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="cf",
         description="Code Factory: multi-CLI autonomous software factory with deterministic anti-slop gates.",
     )
+    parser.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_doc = sub.add_parser("doctor", help="Probe installed coding CLIs and cluster readiness.")
@@ -299,6 +363,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_ratchet = sub.add_parser("ratchet", help="Summarize recurring mistakes in the ratchet inbox.")
     p_ratchet.add_argument("--repo", default=".", help="Target repository path.")
     p_ratchet.set_defaults(func=_cmd_ratchet)
+
+    p_clean = sub.add_parser("clean", help="Remove leftover worktrees after Code Factory runs stop.")
+    p_clean.add_argument("--repo", required=True, help="Target repository path.")
+    p_clean.add_argument("--dry-run", action="store_true", help="Print actions without modifying disk.")
+    p_clean.set_defaults(func=_cmd_clean)
 
     p_audit = sub.add_parser(
         "audit",

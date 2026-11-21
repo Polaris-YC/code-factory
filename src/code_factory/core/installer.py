@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,6 +14,20 @@ class InstallAction:
     source: Path
     destination: Path
     mode: str
+
+
+def resolve_bundle_root(package_root: Path) -> Path:
+    """Find the bundle in a source checkout or the active installation."""
+    package_root = package_root.resolve()
+    shared_root = Path(sys.prefix) / "share" / "code-factory"
+    for root in (package_root, shared_root):
+        if (root / "skills").is_dir() and (root / "plugin.json").is_file():
+            return root
+    raise FileNotFoundError(
+        f"Code Factory bundle not found in {package_root} or {shared_root}. "
+        "Reinstall Code Factory from a wheel, or run 'uv run cf install' "
+        "from a complete source checkout."
+    )
 
 
 def _link_or_copy(src: Path, dst: Path, *, copy: bool, dry_run: bool) -> str:
@@ -41,7 +56,7 @@ def install_bundle(
     dry_run: bool = False,
 ) -> list[InstallAction]:
     """Install Code Factory plugin/skills into Antigravity, Claude Code, and/or Codex."""
-    pkg = package_root.resolve()
+    pkg = resolve_bundle_root(package_root)
     skills_dir = pkg / "skills"
     actions: list[InstallAction] = []
 
@@ -58,30 +73,13 @@ def install_bundle(
             )
             mode = _link_or_copy(pkg, dst, copy=copy, dry_run=dry_run)
             actions.append(InstallAction("antigravity", pkg, dst, mode))
-        elif harness == "claude":
-            base = (
-                home / ".claude" / "skills"
-                if scope == "global"
-                else ws / ".claude" / "skills"
-            )
-            if skills_dir.is_dir():
-                for skill in sorted(skills_dir.iterdir()):
-                    if skill.is_dir() and (skill / "SKILL.md").is_file():
-                        dst = base / skill.name
-                        mode = _link_or_copy(skill, dst, copy=copy, dry_run=dry_run)
-                        actions.append(InstallAction("claude", skill, dst, mode))
-        elif harness == "codex":
-            base = (
-                home / ".codex" / "skills"
-                if scope == "global"
-                else ws / ".codex" / "skills"
-            )
-            if skills_dir.is_dir():
-                for skill in sorted(skills_dir.iterdir()):
-                    if skill.is_dir() and (skill / "SKILL.md").is_file():
-                        dst = base / skill.name
-                        mode = _link_or_copy(skill, dst, copy=copy, dry_run=dry_run)
-                        actions.append(InstallAction("codex", skill, dst, mode))
+        elif harness in {"claude", "codex"}:
+            base = (home if scope == "global" else ws) / f".{harness}" / "skills"
+            for skill in sorted(skills_dir.iterdir()):
+                if skill.is_dir() and (skill / "SKILL.md").is_file():
+                    dst = base / skill.name
+                    mode = _link_or_copy(skill, dst, copy=copy, dry_run=dry_run)
+                    actions.append(InstallAction(harness, skill, dst, mode))
         else:
             raise ValueError(f"Unsupported install target: '{harness}'")
 
