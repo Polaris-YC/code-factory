@@ -504,6 +504,7 @@ class RepoAuditor:
                 "- Focus on REAL bugs, subtle edge cases, silent data/numerical errors, architectural violations, and missing falsifiable tests.",
                 "- Do NOT emit style nitpicks or speculative praise.",
                 "- For recurring bug classes, suggest a `ratchet_rule_idea` (lint/slop/arch/test check).",
+                "- Human-readable reporting: On first mention of any repo-internal file, class, or function in `title`, `description`, or `fix_hint`, add a brief parenthetical role gloss (3-10 words) so a human reader can follow without memorizing internal symbols; skip stdlib/common terms and do not repeat glosses.",
                 "",
                 "Return ONLY valid JSON matching the ShardReview schema.",
             ]
@@ -586,6 +587,7 @@ class RepoAuditor:
                 "1. `executive_summary`: concise assessment of overall repo health and top priorities.",
                 "2. `systemic_risks`: 3-6 cross-cutting patterns seen across modules.",
                 "3. `recommended_gates`: 3-7 concrete deterministic checks (slop patterns, AST boundaries, invariant tests) to add to `.code-factory/factory.toml`.",
+                "4. Human-readable reporting: On first mention of any repo-internal file, class, or function in `executive_summary` or `systemic_risks`, add a brief parenthetical role gloss (3-10 words); skip stdlib/common terms and do not repeat glosses.",
                 "",
                 "## Findings JSON",
                 json.dumps(compact, indent=2, ensure_ascii=False),

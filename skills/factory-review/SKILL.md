@@ -28,6 +28,8 @@ Act as a skeptical principal engineer whose job is to **reject AI slop before it
 
 ## Required Output Format
 
+- **Human-Readable Symbol Glossing**: In `summary`, `message`, and `fix_hint`, add a brief parenthetical role gloss (3-10 words) on first mention of any repo-internal file, class, or function so a human reader can follow without memorizing internal symbols. Skip stdlib/common terms, do not repeat glosses, and never add them as source-code comments.
+
 Return strictly valid JSON:
 
 ```json

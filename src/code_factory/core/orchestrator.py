@@ -148,10 +148,11 @@ def _build_reviewer_prompt(
             *gate_lines,
             "",
             "## Review Rubric",
-            "1. Correctness & edge cases: Does the diff actually satisfy the spec?",
+            "1. Correctness & edge cases: Does the diff satisfy THIS task's specification? Judge ONLY against this task's spec and `owned_paths`; other parts of the overall DAG goal belong to separate tasks.",
             "2. Deletion bias: Reject dead code, redundant wrappers, or over-engineering.",
             "3. Scope discipline: Reject unrelated edits or style churn.",
             "4. Anti-slop: Reject stale/excuse comments, silent error swallowing, or fake tests.",
+            "5. Human-readable reporting: On first mention of any repo-internal file, class, or function in `summary`, `message`, or `fix_hint`, add a brief parenthetical role gloss (3-10 words) so a human reader does not need to memorize internal symbols; skip stdlib/common terms and do not repeat glosses.",
             "",
             "Respond ONLY with a valid JSON object matching the ReviewVerdict schema:",
             '{"decision": "APPROVE" | "REQUEST_CHANGES", "summary": "...", "issues": [...]}',
@@ -270,7 +271,7 @@ class FactoryOrchestrator:
         payload["base_branch"] = branch
         payload["mode"] = (mode or self.config.mode).value
         dag = TaskDAG.from_dict(payload)
-        validate_and_plan(dag)
+        validate_and_plan(dag, permissions=self.config.permissions)
         return dag
 
     def run_dag(
@@ -283,7 +284,7 @@ class FactoryOrchestrator:
         resume_state: RunState | None = None,
     ) -> RunState:
         """Execute (or resume) a validated TaskDAG end-to-end with bounded self-healing."""
-        plan = validate_and_plan(dag)
+        plan = validate_and_plan(dag, permissions=self.config.permissions)
         store = RunStore(self.repo_root, dag.run_id)
         store.save_dag(dag)
 

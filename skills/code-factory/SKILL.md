@@ -49,4 +49,5 @@ The engine handles the entire inner loop with zero babysitting:
 ### 5. Report Evidence & Ratchet
 Read `<repo>/.code-factory/runs/<run_id>/report.md` (and `escalation.md` if any task escalated):
 - Present verifiable gate evidence, commit SHAs, integration branch / PR link.
+- Apply **Human-Readable Symbol Glossing** when summarizing findings or failures: on first mention of any repo-internal file, class, or function, add a brief parenthetical role gloss (3-10 words) without repeating it in the same reply.
 - If any gate failures or review rejections occurred, run `cf ratchet --repo <repo>` and suggest running `factory-ratchet` to graduate repeated mistakes into permanent rules.

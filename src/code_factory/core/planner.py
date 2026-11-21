@@ -7,7 +7,9 @@ from dataclasses import dataclass
 from fnmatch import fnmatch
 import subprocess
 
+from code_factory.config import PermissionGateConfig
 from code_factory.core.models import TaskDAG, TaskSpec
+from code_factory.gates.permissions import verify_permission_policy
 
 
 class DAGValidationError(ValueError):
@@ -70,10 +72,19 @@ def validate_done_checks_syntax(task: TaskSpec) -> None:
 def validate_and_plan(
     dag: TaskDAG,
     allow_parallel_overlap: bool = False,
+    permissions: PermissionGateConfig | None = None,
 ) -> ExecutionPlan:
-    """Validate TaskDAG acyclicity, dependencies, shell syntax, and parallel scope isolation."""
+    """Validate TaskDAG acyclicity, dependencies, shell syntax, permissions, and parallel scope isolation."""
     if not dag.tasks:
         raise DAGValidationError("TaskDAG must contain at least one task.")
+
+    if permissions is not None:
+        policy_errors = verify_permission_policy(dag.tasks, permissions)
+        if policy_errors:
+            raise DAGValidationError(
+                "Permission policy verification failed:\n"
+                + "\n".join(f"- {err}" for err in policy_errors)
+            )
 
     by_id: dict[str, TaskSpec] = {}
     for task in dag.tasks:

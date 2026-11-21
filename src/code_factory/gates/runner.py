@@ -10,6 +10,7 @@ from pathlib import Path
 from code_factory.config import FactoryConfig, GateCommandConfig
 from code_factory.core.models import GateCheckResult, GateReport
 from code_factory.gates.arch import run_arch_gate
+from code_factory.gates.permissions import run_permission_gate
 from code_factory.gates.slop import run_slop_gate
 
 
@@ -97,6 +98,15 @@ class GateRunner:
     ) -> GateReport:
         checks: list[GateCheckResult] = []
 
+        checks.append(
+            run_permission_gate(
+                cwd=cwd,
+                changed_files=changed_files,
+                diff_text=diff_text,
+                config=self.config.permissions,
+                owned_paths=owned_paths,
+            )
+        )
         checks.append(
             run_slop_gate(
                 changed_files=changed_files,

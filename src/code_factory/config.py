@@ -36,7 +36,8 @@ class SlopGateConfig:
 @dataclass(frozen=True)
 class ArchRuleConfig:
     from_module: str
-    forbid: list[str]
+    forbid: list[str] = field(default_factory=list)
+    forbid_calls: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,20 @@ class ArchGateConfig:
     enabled: bool = False
     src_root: str = "src"
     rules: list[ArchRuleConfig] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class PermissionGateConfig:
+    enabled: bool = True
+    default_deny: bool = True
+    protected_paths: list[str] = field(
+        default_factory=lambda: [
+            ".code-factory/**",
+            ".github/**",
+        ]
+    )
+    allow_delete: bool = True
+    allow_symlinks: bool = False
 
 
 @dataclass(frozen=True)
@@ -87,6 +102,7 @@ class FactoryConfig:
     gate_commands: list[GateCommandConfig] = field(default_factory=list)
     slop: SlopGateConfig = field(default_factory=SlopGateConfig)
     arch: ArchGateConfig = field(default_factory=ArchGateConfig)
+    permissions: PermissionGateConfig = field(default_factory=PermissionGateConfig)
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -145,6 +161,13 @@ def load_config(
                 "src_root": defaults.arch.src_root,
                 "rules": [],
             },
+            "permissions": {
+                "enabled": defaults.permissions.enabled,
+                "default_deny": defaults.permissions.default_deny,
+                "protected_paths": list(defaults.permissions.protected_paths),
+                "allow_delete": defaults.permissions.allow_delete,
+                "allow_symlinks": defaults.permissions.allow_symlinks,
+            },
         },
     }
 
@@ -161,6 +184,7 @@ def load_config(
     g_sec = raw.get("gates", {})
     s_sec = g_sec.get("slop", {})
     a_sec = g_sec.get("arch", {})
+    p_sec = g_sec.get("permissions", {})
 
     gate_commands = [
         GateCommandConfig(
@@ -175,6 +199,7 @@ def load_config(
         ArchRuleConfig(
             from_module=str(item["from"]),
             forbid=[str(x) for x in item.get("forbid", [])],
+            forbid_calls=[str(x) for x in item.get("forbid_calls", [])],
         )
         for item in a_sec.get("rules", [])
     ]
@@ -212,6 +237,13 @@ def load_config(
             enabled=bool(a_sec.get("enabled", False)),
             src_root=str(a_sec.get("src_root", "src")),
             rules=arch_rules,
+        ),
+        permissions=PermissionGateConfig(
+            enabled=bool(p_sec.get("enabled", True)),
+            default_deny=bool(p_sec.get("default_deny", True)),
+            protected_paths=[str(p) for p in p_sec.get("protected_paths", [])],
+            allow_delete=bool(p_sec.get("allow_delete", True)),
+            allow_symlinks=bool(p_sec.get("allow_symlinks", False)),
         ),
     )
 
@@ -300,4 +332,14 @@ forbid_patterns = [
 [gates.arch]
 enabled = false
 src_root = "src"
+
+[gates.permissions]
+enabled = true
+default_deny = true
+protected_paths = [
+  ".code-factory/**",
+  ".github/**",
+]
+allow_delete = true
+allow_symlinks = false
 """

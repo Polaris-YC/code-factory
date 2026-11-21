@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from code_factory.config import load_config
+from code_factory.config import PermissionGateConfig, load_config
 from code_factory.core.models import FactoryMode, TaskDAG, TaskSpec
 from code_factory.core.planner import DAGValidationError, validate_and_plan
 
@@ -98,6 +98,77 @@ class TestConfigAndPlanner(unittest.TestCase):
         with self.assertRaises(DAGValidationError) as ctx:
             validate_and_plan(dag)
         self.assertIn("invalid shell syntax", str(ctx.exception))
+
+    def test_static_permission_verifier_rejects_escalation_empty_and_traversal(self) -> None:
+        perms = PermissionGateConfig(
+            enabled=True,
+            default_deny=True,
+            protected_paths=[".code-factory/**", ".github/**"],
+        )
+        # 1. Non-escalation: owned_paths overlapping protected_paths must fail before run.
+        dag_escalate = TaskDAG(
+            run_id="r5",
+            goal="Modify gate config",
+            base_branch="main",
+            tasks=[
+                TaskSpec(
+                    id="t1",
+                    title="Escalate",
+                    description="",
+                    owned_paths=[".code-factory/factory.toml"],
+                )
+            ],
+        )
+        with self.assertRaises(DAGValidationError) as ctx:
+            validate_and_plan(dag_escalate, permissions=perms)
+        self.assertIn("non-escalation invariant", str(ctx.exception))
+
+        # 2. Empty owned_paths rejected under default_deny.
+        dag_empty = TaskDAG(
+            run_id="r6",
+            goal="Empty scope",
+            base_branch="main",
+            tasks=[TaskSpec(id="t1", title="Empty", description="", owned_paths=[])],
+        )
+        with self.assertRaises(DAGValidationError) as ctx2:
+            validate_and_plan(dag_empty, permissions=perms)
+        self.assertIn("empty owned_paths", str(ctx2.exception))
+
+        # 3. Path traversal in owned_paths rejected.
+        dag_trav = TaskDAG(
+            run_id="r7",
+            goal="Traversal",
+            base_branch="main",
+            tasks=[TaskSpec(id="t1", title="Trav", description="", owned_paths=["../outside.py"])],
+        )
+        with self.assertRaises(DAGValidationError) as ctx3:
+            validate_and_plan(dag_trav, permissions=perms)
+        self.assertIn("Path traversal", str(ctx3.exception))
+
+    def test_loads_permissions_and_arch_forbid_calls_from_toml(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            (repo / ".code-factory").mkdir(parents=True)
+            (repo / ".code-factory" / "factory.toml").write_text(
+                '[gates.permissions]\n'
+                'enabled = true\n'
+                'default_deny = true\n'
+                'protected_paths = [".code-factory/**", "secrets/**"]\n'
+                'allow_delete = false\n'
+                'allow_symlinks = false\n'
+                '[gates.arch]\n'
+                'enabled = true\n'
+                '[[gates.arch.rules]]\n'
+                'from = "demo.core"\n'
+                'forbid = ["demo.cli"]\n'
+                'forbid_calls = ["subprocess.*", "eval"]\n',
+                encoding="utf-8",
+            )
+            cfg = load_config(repo_root=repo, global_config_path=Path(tmp) / "missing.toml")
+            self.assertTrue(cfg.permissions.enabled)
+            self.assertFalse(cfg.permissions.allow_delete)
+            self.assertEqual(cfg.permissions.protected_paths, [".code-factory/**", "secrets/**"])
+            self.assertEqual(cfg.arch.rules[0].forbid_calls, ["subprocess.*", "eval"])
 
 
 if __name__ == "__main__":
