@@ -8,6 +8,14 @@ version = "0.1.0"
 description = "Autonomous multi-CLI software factory with deterministic anti-slop gates and portable agent skills."
 readme = "README.md"
 requires-python = ">=3.12"
+license = { text = "MIT" }
+classifiers = [
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
+]
 dependencies = []
 
 [project.optional-dependencies]
@@ -18,3 +26,20 @@ cf = "code_factory.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.data-files]
+"share/code-factory" = ["plugin.json"]
+"share/code-factory/rules" = ["rules/*.md"]
+"share/code-factory/skills/code-factory" = ["skills/code-factory/SKILL.md"]
+"share/code-factory/skills/code-factory/references" = ["skills/code-factory/references/*.md"]
+"share/code-factory/skills/factory-harden" = ["skills/factory-harden/SKILL.md"]
+"share/code-factory/skills/factory-ratchet" = ["skills/factory-ratchet/SKILL.md"]
+"share/code-factory/skills/factory-review" = ["skills/factory-review/SKILL.md"]
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.mypy]
+python_version = "3.12"
+files = ["src"]
+check_untyped_defs = true
