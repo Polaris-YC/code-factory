@@ -17,8 +17,8 @@ from code_factory.core.orchestrator import FactoryOrchestrator
 def init_repo(repo: Path) -> None:
     commands = (
         ["init", "--quiet", "--initial-branch=main", "--template="],
-        ["config", "core.hooksPath", str(repo / ".git" / "hooks")],
-        ["config", "commit.gpgSign", "false"],
+        ["config", "core.excludesFile", os.devnull],
+        ["config", "core.attributesFile", os.devnull],
         [
             "-c", "user.name=Code Factory Demo",
             "-c", "user.email=demo@example.com",
@@ -91,6 +91,13 @@ def run_demo(repo: Path) -> int:
     if result.gate_attempts != 2 or result.reviewer_adapter != reviewer.name:
         print("Expected one gate retry and approval from the separate mock reviewer.", file=sys.stderr)
         return 1
+    if not result.commit_sha or subprocess.run(
+        ["git", "merge-base", "--is-ancestor", result.commit_sha, "refs/heads/main"],
+        cwd=repo,
+        check=False,
+    ).returncode != 0:
+        print("The reviewed commit is missing from main's history.", file=sys.stderr)
+        return 1
 
     print(f"5. Gates passed on attempt {result.gate_attempts}. {reviewer.name} approved the change.")
     print(f"6. Integration gates passed on {state.integration_branch} and Git merged it into main.")
@@ -98,6 +105,9 @@ def run_demo(repo: Path) -> int:
 
 
 def main() -> int:
+    os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
+    os.environ["GIT_CONFIG_GLOBAL"] = os.devnull
+    os.environ["GIT_ATTR_NOSYSTEM"] = "1"
     git_env_vars = subprocess.check_output(["git", "rev-parse", "--local-env-vars"], text=True)
     for name in git_env_vars.splitlines():
         os.environ.pop(name, None)

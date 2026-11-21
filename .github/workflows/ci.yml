@@ -30,12 +30,14 @@ jobs:
         env:
           GATE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
-          if [ "${GATE_BASE:?Missing Git comparison base}" = 0000000000000000000000000000000000000000 ]; then
-            GATE_BASE=$(git hash-object -w -t tree --stdin </dev/null)
-          elif ! git cat-file -e "${GATE_BASE}^{commit}"; then
-            git fetch --no-tags origin "$GATE_BASE"
+          gate_args=()
+          if [ "${GATE_BASE:?Missing Git comparison base}" != 0000000000000000000000000000000000000000 ]; then
+            if ! git cat-file -e "${GATE_BASE}^{commit}"; then
+              git fetch --no-tags origin "$GATE_BASE"
+            fi
+            gate_args=(--base "$GATE_BASE")
           fi
-          PYTHONPATH=src python3 -m code_factory gate --repo . --base "$GATE_BASE"
+          PYTHONPATH=src python3 -m code_factory gate --repo . "${gate_args[@]}"
       - name: Run offline quickstart
         env:
           PYTHONWARNINGS: error::ResourceWarning
