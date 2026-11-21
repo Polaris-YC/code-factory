@@ -30,7 +30,7 @@ sandbox = true
 
 [gates]
 commands = [
-  { name = "unit-tests", cmd = "PYTHONPATH=src python3 -m unittest discover -s tests -v", timeout = 180 },
+  { name = "unit-tests", cmd = "PYTHONPATH=src python3 -W error::ResourceWarning -m unittest discover -s tests -v", timeout = 180 },
 ]
 
 [gates.slop]
