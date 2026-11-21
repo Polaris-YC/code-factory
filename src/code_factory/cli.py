@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Iterator
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from importlib.metadata import distributions
 from pathlib import Path
 
@@ -230,37 +230,6 @@ def _cmd_ratchet(args: argparse.Namespace) -> int:
     return 0
 
 
-def _run_may_be_active(repo: Path, run_id: Path) -> bool:
-    run_dir = repo / ".code-factory" / "runs" / run_id
-    try:
-        state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return (run_dir / "dag.json").exists()
-    except (UnicodeError, json.JSONDecodeError):
-        return True
-    # Successful integration is recorded in the final state write.
-    return not (isinstance(state, dict) and state.get("integrated") is True)
-
-
-@contextmanager
-def _hold_integration_ref(repo: Path, run_id: Path) -> Iterator[None]:
-    # A direct orchestrator run must recreate this ref before starting any workers.
-    ref = f"refs/heads/cf/{run_id.as_posix()}/integrate"
-    oid = _git(["rev-parse", "--verify", "--quiet", ref], cwd=repo, check=False).stdout.strip()
-    with subprocess.Popen(
-        ["git", "update-ref", "--stdin"], cwd=repo,
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
-    ) as transaction:
-        assert transaction.stdin is not None and transaction.stdout is not None
-        verify = f"verify {ref} {oid}" if oid else f"verify {ref}"
-        transaction.stdin.write(f"start\n{verify}\nprepare\n")
-        transaction.stdin.flush()
-        replies = (transaction.stdout.readline(), transaction.stdout.readline())
-        if replies != ("start: ok\n", "prepare: ok\n"):
-            raise GitError(f"Could not lock the integration branch for run {run_id}. Try again later.")
-        yield  # Closing stdin aborts the prepared transaction and releases the lock.
-
-
 def _check_clean_worktree(path: Path) -> None:
     index = _git(["ls-files", "-v", "--stage", "-z"], cwd=path).stdout.split("\0")
     if any(entry.startswith("S ") or entry[:1].islower() for entry in index):
@@ -287,13 +256,20 @@ def _check_clean_worktree(path: Path) -> None:
 def _cmd_clean(args: argparse.Namespace) -> int:
     repo = Path(args.repo).expanduser().resolve()
     root = GitWorktreeManager(repo, load_config(repo).worktree_root).worktree_root
-    listing = _git(["worktree", "list", "--porcelain", "-z"], cwd=repo).stdout
-    entries = [entry.split("\0") for entry in listing.rstrip("\0").split("\0\0")]
-    checkouts = {Path(location.removeprefix("worktree ")) for location, *_ in entries} | {repo}
+    proc = subprocess.run(
+        ["git", "worktree", "list", "--porcelain", "-z"],
+        cwd=repo,
+        capture_output=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise GitError(os.fsdecode(proc.stderr).strip() or "git worktree list failed")
+    entries = [entry.split(b"\0") for entry in proc.stdout.rstrip(b"\0").split(b"\0\0") if entry]
 
     result = 0
-    for location, *attributes in entries[1:]:  # Skip the main worktree.
-        path = Path(location.removeprefix("worktree "))
+    for location_bytes, *attr_bytes in entries[1:]:  # Skip the main worktree.
+        path = Path(os.fsdecode(location_bytes.removeprefix(b"worktree ")))
+        attributes = [os.fsdecode(a) for a in attr_bytes]
         if not path.is_relative_to(root):
             continue
         relative = path.relative_to(root)
@@ -308,20 +284,14 @@ def _cmd_clean(args: argparse.Namespace) -> int:
                 raise GitError(f"Skipping {path}: worktree is in use or its path changed.")
             if any(attr.partition(" ")[0] == "locked" for attr in attributes):
                 raise GitError(f"Skipping {path}: worktree is locked.")
-            run_id = relative.parent
-            if any(_run_may_be_active(checkout, run_id) for checkout in checkouts):
-                raise GitError(f"Skipping {path}: run {run_id} may still be active.")
-            with nullcontext() if args.dry_run else _hold_integration_ref(repo, run_id):
-                if not args.dry_run and any(_run_may_be_active(p, run_id) for p in checkouts):
-                    raise GitError(f"Skipping {path}: run {run_id} became active.")
-                if path.exists():
-                    _check_clean_worktree(path)
-                if args.dry_run:
-                    print(f"[DRY-RUN] Would remove {path}")
-                else:
-                    # Git also removes the registration when the checkout is already missing.
-                    _git(["worktree", "remove", "--", str(path)], cwd=repo)
-                    print(f"Removed {path}")
+            if path.exists():
+                _check_clean_worktree(path)
+            if args.dry_run:
+                print(f"[DRY-RUN] Would remove {path}")
+            else:
+                # Git also removes the registration when the checkout is already missing.
+                _git(["worktree", "remove", "--", str(path)], cwd=repo)
+                print(f"Removed {path}")
         except (GitError, OSError) as exc:
             print(exc, file=sys.stderr)
             result = 1

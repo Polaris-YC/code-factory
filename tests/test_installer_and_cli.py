@@ -119,18 +119,19 @@ class TestClean(unittest.TestCase):
         for path in (dirty / "local.env", locked, foreign):
             self.assertTrue(path.exists())
 
-    def test_cleanup_skips_an_active_run(self) -> None:
+    def test_cleanup_skips_active_run_and_cleans_stopped_escalated_run(self) -> None:
         path = self.manager.create_integration_worktree("direct/run", "main").path
         state = self.repo / ".code-factory/runs/direct/run/state.json"
         state.parent.mkdir(parents=True)
         state.write_text('{"integrated": false}')
-        self.assertIn("may still be active", self.clean(status=1)[1])
-        state.write_text('{"integrated": true}')
 
         with redirect_stderr(io.StringIO()) as errors, patch(
             "code_factory.cli._cmd_run", side_effect=lambda _: main(["clean", *self.args]),
         ):
             self.assertEqual(main(["run", *self.args, "--dag", "unused.json"]), 1)
         self.assertIn("a run or cleanup is active", errors.getvalue())
+        self.assertTrue(path.exists())
+
+        # Once the escalated run has exited and released its lock, clean removes it.
         self.clean()
         self.assertFalse(path.exists())
