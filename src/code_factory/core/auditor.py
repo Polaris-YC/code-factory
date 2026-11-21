@@ -191,7 +191,8 @@ def scan_repo_files(repo_root: Path, max_files: int = 400) -> list[tuple[str, in
         if path.suffix.lower() not in _TEXT_EXTENSIONS:
             continue
         try:
-            line_count = sum(1 for _ in path.open("r", encoding="utf-8", errors="replace"))
+            with path.open("r", encoding="utf-8", errors="replace") as fh:
+                line_count = sum(1 for _ in fh)
         except OSError:
             continue
         entries.append((rel.as_posix(), line_count))

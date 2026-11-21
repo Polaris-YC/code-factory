@@ -8,6 +8,8 @@ from fnmatch import fnmatch
 from code_factory.config import SlopGateConfig
 from code_factory.core.models import GateCheckResult
 
+_NON_CODE_SUFFIXES = (".md", ".markdown", ".rst", ".txt", ".json", ".toml", ".yaml", ".yml")
+
 
 def _path_matches_owned(path: str, owned_paths: list[str]) -> bool:
     norm = path.strip().lstrip("./")
@@ -72,6 +74,9 @@ def run_slop_gate(
         if line.startswith("+++ b/"):
             current_file = line[6:].strip()
             continue
+        if line.startswith('+++ "b/'):
+            current_file = line[7:].strip().removesuffix('"')
+            continue
         if line.startswith("+++") or line.startswith("---"):
             continue
         if line.startswith("+"):
@@ -95,14 +100,14 @@ def run_slop_gate(
             f"{label} ({measured_lines} lines) exceeds budget ({budget} lines)."
         )
 
-    non_empty_added = [
-        (fname, content) for fname, content in added_lines if content.strip()
+    non_empty_code_lines = [
+        content
+        for fname, content in added_lines
+        if content.strip() and not fname.lower().endswith(_NON_CODE_SUFFIXES)
     ]
-    if len(non_empty_added) >= 20:
-        comment_count = sum(
-            1 for _, content in non_empty_added if _is_comment_line(content)
-        )
-        ratio = comment_count / len(non_empty_added)
+    if len(non_empty_code_lines) >= 20:
+        comment_count = sum(1 for content in non_empty_code_lines if _is_comment_line(content))
+        ratio = comment_count / len(non_empty_code_lines)
         if ratio > config.max_comment_ratio:
             violations.append(
                 f"Comment-to-code ratio on added lines ({ratio:.2f}) exceeds "

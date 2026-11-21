@@ -23,26 +23,30 @@ class TestGates(unittest.TestCase):
         cfg = SlopGateConfig(
             enabled=True,
             max_diff_lines=50,
-            forbid_patterns=[r"TODO\(agent\)"],
+            forbid_patterns=[r"\bREVIEW_MARKER\b"],
             enforce_owned_paths=True,
         )
         diff = (
             "diff --git a/src/allowed.py b/src/allowed.py\n"
             "+++ b/src/allowed.py\n"
-            "+x = 1  # TODO(agent) fix later\n"
+            "+x = 1  # REVIEW_MARKER\n"
             "diff --git a/src/secret.py b/src/secret.py\n"
             "+++ b/src/secret.py\n"
             "+y = 2\n"
+            "diff --git a/README.md b/README.md\n"
+            "+++ b/README.md\n"
+            "+# REVIEW_MARKER\n"
         )
         res = run_slop_gate(
-            changed_files=["src/allowed.py", "src/secret.py"],
+            changed_files=["src/allowed.py", "src/secret.py", "README.md"],
             diff_text=diff,
             config=cfg,
-            owned_paths=["src/allowed.py"],
+            owned_paths=["src/allowed.py", "README.md"],
         )
         self.assertFalse(res.passed)
         self.assertIn("Out-of-scope", res.excerpt)
-        self.assertIn("Forbidden pattern", res.excerpt)
+        self.assertIn("matched in src/allowed.py", res.excerpt)
+        self.assertIn("matched in README.md", res.excerpt)
 
     def test_slop_gate_passes_clean_diff(self) -> None:
         cfg = SlopGateConfig(enabled=True, max_diff_lines=100)
@@ -54,6 +58,29 @@ class TestGates(unittest.TestCase):
             owned_paths=["src/*.py"],
         )
         self.assertTrue(res.passed)
+
+    def test_slop_gate_excludes_markdown_from_comment_ratio(self) -> None:
+        cfg = SlopGateConfig(enabled=True, max_diff_lines=100)
+        markdown_diff = "+++ b/README.md\n+# Setup\n" + "".join(
+            f"+* Step {i}\n" for i in range(39)
+        )
+        res = run_slop_gate(
+            changed_files=["README.md"],
+            diff_text=markdown_diff,
+            config=cfg,
+        )
+        self.assertTrue(res.passed, res.excerpt)
+
+        code_diff = "+++ b/src/a.py\n" + "".join(
+            f"+# Explanation {i}\n+x_{i} = {i}\n" for i in range(10)
+        )
+        res = run_slop_gate(
+            changed_files=["README.md", "src/a.py"],
+            diff_text=markdown_diff + code_diff,
+            config=cfg,
+        )
+        self.assertFalse(res.passed)
+        self.assertIn("Comment-to-code ratio on added lines (0.50)", res.excerpt)
 
     def test_arch_gate_catches_forbidden_import(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

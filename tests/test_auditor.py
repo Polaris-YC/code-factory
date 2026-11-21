@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from code_factory.adapters.mock import MockAdapter
 from code_factory.adapters.registry import AdapterRegistry
@@ -43,6 +44,16 @@ class TestRepoAuditor(unittest.TestCase):
             )
             plan = build_deterministic_shards(files)
             self.assertEqual(len(plan.shards), 3)
+
+    def test_scan_closes_file_after_counting_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            path = repo / "sample.py"
+            path.write_text("x = 1\ny = 2\n", encoding="utf-8")
+            with path.open(encoding="utf-8") as fh:
+                with patch.object(Path, "open", return_value=fh):
+                    self.assertEqual(scan_repo_files(repo), [("sample.py", 2)])
+                self.assertTrue(fh.closed)
 
     def test_lead_guided_parallel_audit_and_synthesis(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
