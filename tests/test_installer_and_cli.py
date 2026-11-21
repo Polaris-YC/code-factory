@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -80,9 +81,11 @@ class TestClean(unittest.TestCase):
     def setUp(self) -> None:
         self.repo = Path(self.enterContext(tempfile.TemporaryDirectory())).resolve()
         self.git("init", "-q", "-b", "main")
+        (self.repo / "tracked.txt").write_text("initial\n", encoding="utf-8")
+        self.git("add", "tracked.txt")
         self.git(
             "-c", "user.name=Test", "-c", "user.email=test@example.com",
-            "commit", "-qm", "initial", "--allow-empty",
+            "commit", "-qm", "initial",
         )
         config = self.repo / ".code-factory" / "factory.toml"
         config.parent.mkdir()
@@ -107,6 +110,47 @@ class TestClean(unittest.TestCase):
             self.assertIn(f"Would remove {handle.path}", output.getvalue())
             self.assertTrue(handle.path.is_dir())
         self.assertEqual(self.git("worktree", "list", "--porcelain"), before)
+
+    def test_clean_preserves_active_run_worktrees(self) -> None:
+        integration = self.manager.create_integration_worktree("run1", "main").path
+
+        def check_clean(_args: object) -> int:
+            for options in (["--dry-run"], []):
+                with self.subTest(options=options):
+                    clean = subprocess.run(
+                        [sys.executable, "-m", "code_factory", *self.clean_args, *options],
+                        capture_output=True, text=True, timeout=10, check=False,
+                    )
+                    self.assertEqual(clean.returncode, 1)
+                    self.assertIn("a run or cleanup is active", clean.stderr)
+                    self.assertTrue(integration.is_dir())
+            return 0
+
+        with patch("code_factory.cli._cmd_run", side_effect=check_clean):
+            self.assertEqual(main(["run", "--repo", str(self.repo), "--dag", "unused.json"]), 0)
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(main(self.clean_args), 0)
+        self.assertFalse(integration.exists())
+
+    def test_clean_preserves_edits_hidden_by_index_flags(self) -> None:
+        for flag in ("assume-unchanged", "skip-worktree"):
+            with self.subTest(flag=flag):
+                worktree = self.manager.create_worktree("run1", flag, "main")
+                self.git("-C", str(worktree.path), "update-index", f"--{flag}", "tracked.txt")
+                tracked = worktree.path / "tracked.txt"
+                tracked.write_text("local edit\n", encoding="utf-8")
+                self.assertEqual(self.git("-C", str(worktree.path), "status", "--porcelain"), "")
+                for options in (["--dry-run"], []):
+                    with (
+                        redirect_stdout(io.StringIO()) as output,
+                        redirect_stderr(io.StringIO()) as errors,
+                    ):
+                        self.assertEqual(main([*self.clean_args, *options]), 1)
+                    self.assertEqual(output.getvalue(), "")
+                    self.assertIn(f"Skipping {worktree.path}: index uses", errors.getvalue())
+                    self.assertEqual(tracked.read_text(encoding="utf-8"), "local edit\n")
+                listing = self.git("worktree", "list", "--porcelain")
+                self.assertIn(f"worktree {worktree.path}\n", listing)
 
     def test_clean_removes_clean_and_missing_worktrees_and_preserves_other_data(self) -> None:
         clean = self.manager.create_worktree("run1", "clean", "main")

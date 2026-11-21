@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from code_factory import __version__
@@ -23,6 +26,33 @@ from code_factory.gates.runner import GateRunner
 
 def _package_root() -> Path:
     return Path(__file__).resolve().parents[2]
+
+
+@contextmanager
+def _lock_worktrees(repo: Path, *, exclusive: bool) -> Iterator[None]:
+    try:
+        import fcntl
+    except ImportError as exc:
+        if exclusive:
+            raise GitError("Worktree cleanup requires POSIX file locking.") from exc
+        yield
+        return
+
+    # All linked checkouts share this directory, so dry-run needs no lock file.
+    common_dir = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=repo)
+    fd = os.open(common_dir.stdout.removesuffix("\n"), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+        try:
+            fcntl.flock(fd, mode | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            active = "a run or cleanup is active" if exclusive else "cleanup is active"
+            raise GitError(
+                f"Code Factory worktrees in {repo} are busy: {active}. Try again later."
+            ) from exc
+        yield
+    finally:
+        os.close(fd)
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
@@ -126,7 +156,7 @@ def _cmd_plan(args: argparse.Namespace) -> int:
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
-    repo = Path(args.repo).resolve()
+    repo = Path(args.repo).expanduser().resolve()
     config = load_config(repo)
     dag_data = json.loads(Path(args.dag).read_text(encoding="utf-8"))
     if args.dark:
@@ -149,7 +179,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
 
 def _cmd_resume(args: argparse.Namespace) -> int:
-    repo = Path(args.repo).resolve()
+    repo = Path(args.repo).expanduser().resolve()
     config = load_config(repo)
     registry = AdapterRegistry.from_config(config.adapters, config.routing)
     orch = FactoryOrchestrator(repo_root=repo, config=config, registry=registry)
@@ -199,16 +229,10 @@ def _cmd_clean(args: argparse.Namespace) -> int:
     config = load_config(repo)
     root = GitWorktreeManager(repo, config.worktree_root).worktree_root
     cwd = Path.cwd()
-    try:
-        listing = _git(["worktree", "list", "--porcelain", "-z"], cwd=repo)
-    except (GitError, OSError) as exc:
-        print(exc, file=sys.stderr)
-        return 1
+    listing = _git(["worktree", "list", "--porcelain", "-z"], cwd=repo).stdout
 
     result = 0
-    for entry in listing.stdout.split("\0\0")[1:]:  # The main worktree is listed first.
-        if not entry:
-            continue
+    for entry in listing.rstrip("\0").split("\0\0")[1:]:  # Skip the main worktree.
         location, *attributes = entry.split("\0")
         path = Path(location.removeprefix("worktree "))
         if not path.is_relative_to(root) or path == root:
@@ -223,12 +247,14 @@ def _cmd_clean(args: argparse.Namespace) -> int:
         try:
             if path.resolve() != path or repo.is_relative_to(path) or cwd.is_relative_to(path):
                 raise GitError(f"Skipping {path}: worktree is in use or its path changed.")
-            if any(
-                attribute == "locked" or attribute.startswith("locked ")
-                for attribute in attributes
-            ):
+            if any(attribute.partition(" ")[0] == "locked" for attribute in attributes):
                 raise GitError(f"Skipping {path}: worktree is locked.")
             if path.exists():
+                index = _git(["-c", "core.quotePath=true", "ls-files", "-v"], cwd=path).stdout
+                if any(line.startswith("S ") or line[:1].islower() for line in index.splitlines()):
+                    raise GitError(
+                        f"Skipping {path}: index uses assume-unchanged or skip-worktree."
+                    )
                 status = _git(
                     [
                         "--no-optional-locks",
@@ -436,6 +462,14 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command in {"run", "resume", "clean"}:
+        repo = Path(args.repo).expanduser().resolve()
+        try:
+            with _lock_worktrees(repo, exclusive=args.command == "clean"):
+                return int(args.func(args))
+        except (GitError, OSError) as exc:
+            print(exc, file=sys.stderr)
+            return 1
     return int(args.func(args))
 
 
