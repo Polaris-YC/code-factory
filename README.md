@@ -28,10 +28,21 @@ Code Factory pairs a **heterogeneous multi-CLI agent cluster** (`codex`, `claude
 
 ## Quickstart
 
+### 30-Second Offline Demo (No API Key Required)
+
+See worktree isolation, deterministic gate rejection, autonomous self-healing, and cross-model review end-to-end using the built-in mock adapters:
+
+```bash
+PYTHONPATH=src python3 examples/quickstart/run_mock_demo.py
+```
+
+### Run Against Your Repository
+
 Run directly without installing external dependencies:
 
 ```bash
-# 1. Check installed coding CLIs and cluster readiness
+# 1. Check version, installed coding CLIs, and cluster readiness
+PYTHONPATH=src python3 -m code_factory --version
 PYTHONPATH=src python3 -m code_factory doctor --repo /path/to/target-repo
 
 # 2. Initialize deterministic config in a target repo
@@ -46,7 +57,10 @@ PYTHONPATH=src python3 -m code_factory run --dag tasks.json --repo /path/to/targ
 # 5. Run an architect-guided (agy) + parallel heavy (codex) read-only full-repo code review
 PYTHONPATH=src python3 -m code_factory audit --repo /path/to/target-repo --lead agy --reviewer codex --workers 4
 
-# 6. Install plugin/skills for Antigravity, Claude Code, and Codex
+# 6. Clean up leftover clean worktrees after runs (supports --dry-run)
+PYTHONPATH=src python3 -m code_factory clean --repo /path/to/target-repo --dry-run
+
+# 7. Install plugin/skills for Antigravity, Claude Code, and Codex
 PYTHONPATH=src python3 -m code_factory install --target all --scope global --dry-run
 ```
 
@@ -79,5 +93,12 @@ reviewer = ["claude", "agy", "codex", "gemini"]
 ## Running Tests
 
 ```bash
-PYTHONPATH=src python3 -m unittest discover -s tests -v
+PYTHONPATH=src python3 -W error::ResourceWarning -m unittest discover -s tests -v
 ```
+
+---
+
+## Contributing & License
+
+- See [CONTRIBUTING.md](CONTRIBUTING.md) for architecture boundaries (`arch-gate`), adding adapters/gates, and PR checklists.
+- Released under the [MIT License](LICENSE).
